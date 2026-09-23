@@ -295,6 +295,7 @@ function buildParams(
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		supportsAdditionalTools,
 		supportsToolSearch,
+		supportsToolSearchAtRequestEnd: model.compat?.supportsToolSearchAtRequestEnd ?? true,
 		toolOptions: {
 			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,

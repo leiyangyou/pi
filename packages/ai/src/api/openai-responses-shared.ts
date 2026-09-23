@@ -128,6 +128,8 @@ export interface ConvertResponsesMessagesOptions {
 	supportsMidConvoSystemMessages?: boolean;
 	supportsAdditionalTools?: boolean;
 	supportsToolSearch?: boolean;
+	/** Whether the provider accepts client tool-search items as the final items of a request. Default: true. */
+	supportsToolSearchAtRequestEnd?: boolean;
 	toolOptions?: ConvertResponsesToolsOptions;
 }
 
@@ -181,7 +183,8 @@ export function convertResponsesMessages<TApi extends Api>(
 		normalizedContext.messages,
 		(options?.supportsAdditionalTools ?? false) || (options?.supportsToolSearch ?? false),
 	);
-	const appendSystemToolAdditions = (message: SystemMessage, seed: string): void => {
+	const deferToolSearchAtRequestEnd = options?.supportsToolSearchAtRequestEnd === false;
+	const appendSystemToolAdditions = (message: SystemMessage, seed: string, isFinalMessage: boolean): void => {
 		const tools = transcriptTools.anchorsAdditions ? (message.toolsAdded ?? []) : [];
 		if (tools.length === 0) return;
 		if (options?.supportsAdditionalTools) {
@@ -193,6 +196,9 @@ export function convertResponsesMessages<TApi extends Api>(
 			return;
 		}
 		if (!options?.supportsToolSearch) return;
+		// Providers that reject client tool-search items when they are the final items of a request
+		// (DeepSeek) get the definition on the next request that has a message after the change.
+		if (deferToolSearchAtRequestEnd && isFinalMessage) return;
 		const names = tools.map((tool) => tool.name);
 		const callId = `pi_tool_load_${shortHash(`${seed}:${names.join(",")}`)}`;
 		messages.push({
@@ -216,10 +222,11 @@ export function convertResponsesMessages<TApi extends Api>(
 
 	let msgIndex = 0;
 	let sourceIndex = 0;
+	const finalMessage = transformedMessages.at(-1);
 	for (const msg of transformedMessages) {
 		const isLeadingSystemMessage = sourceIndex++ === 0 && msg.role === "system";
 		if (msg.role === "system") {
-			if (!isLeadingSystemMessage) appendSystemToolAdditions(msg, `system:${msgIndex}`);
+			if (!isLeadingSystemMessage) appendSystemToolAdditions(msg, `system:${msgIndex}`, msg === finalMessage);
 			if (!isLeadingSystemMessage || includeInitialSystemMessage) {
 				const text = isLeadingSystemMessage ? getSystemMessageText(msg) : renderSystemMessageUpdate(msg);
 				if (text.length > 0) {

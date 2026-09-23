@@ -240,6 +240,54 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool"]);
 	});
 
+	test("defers tool-search items when the provider rejects them at the request end", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
+			api: "openai-responses",
+			provider: "deepseek",
+			compat: {
+				supportsMidConvoSystemMessages: true,
+				supportsToolSearch: true,
+				supportsToolSearchAtRequestEnd: false,
+			},
+		};
+		const payload = await capturePayload<{
+			tools?: Array<{ name: string }>;
+			input: Array<{ type?: string }>;
+		}>(model, additionContext);
+
+		expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
+		expect(payload.input.some((item) => item.type === "tool_search_output")).toBe(false);
+	});
+
+	test("sends deferred tool-search items once the request no longer ends with the change", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
+			api: "openai-responses",
+			provider: "deepseek",
+			compat: {
+				supportsMidConvoSystemMessages: true,
+				supportsToolSearch: true,
+				supportsToolSearchAtRequestEnd: false,
+			},
+		};
+		const payload = await capturePayload<{
+			tools?: Array<{ name: string }>;
+			input: Array<{ type?: string; tools?: Array<{ name: string }> }>;
+		}>(model, {
+			messages: [...additionContext.messages, { role: "user", content: "after", timestamp: 3 }],
+		});
+
+		expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
+		expect(
+			payload.input.find((item) => item.type === "tool_search_output")?.tools?.map((value) => value.name),
+		).toEqual(["late_tool"]);
+	});
+
 	test("folds OpenAI updates into the leading developer message without native support", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,

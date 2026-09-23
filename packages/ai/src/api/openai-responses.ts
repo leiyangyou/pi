@@ -75,6 +75,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		supportsAdditionalTools: model.compat?.supportsAdditionalTools ?? false,
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
+		supportsToolSearchAtRequestEnd: model.compat?.supportsToolSearchAtRequestEnd ?? true,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
 	};
@@ -300,6 +301,7 @@ function buildParams(
 		supportsMidConvoSystemMessages: compat.supportsMidConvoSystemMessages,
 		supportsAdditionalTools: compat.supportsAdditionalTools,
 		supportsToolSearch: compat.supportsToolSearch,
+		supportsToolSearchAtRequestEnd: compat.supportsToolSearchAtRequestEnd,
 		toolOptions: {
 			supportsStrictMode: compat.supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,

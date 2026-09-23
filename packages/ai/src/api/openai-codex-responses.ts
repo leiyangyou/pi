@@ -545,6 +545,7 @@ function buildRequestBody(
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		supportsAdditionalTools,
 		supportsToolSearch,
+		supportsToolSearchAtRequestEnd: model.compat?.supportsToolSearchAtRequestEnd ?? true,
 		toolOptions: { strict: null, supportsStrictMode, supportsOpenAIGrammarTools },
 	});
 
