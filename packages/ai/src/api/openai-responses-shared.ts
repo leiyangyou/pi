@@ -128,6 +128,7 @@ export interface ConvertResponsesMessagesOptions {
 	supportsMidConvoSystemMessages?: boolean;
 	supportsAdditionalTools?: boolean;
 	supportsToolSearch?: boolean;
+	requiresToolSearchTrailingNote?: boolean;
 	toolOptions?: ConvertResponsesToolsOptions;
 }
 
@@ -181,6 +182,7 @@ export function convertResponsesMessages<TApi extends Api>(
 		normalizedContext.messages,
 		(options?.supportsAdditionalTools ?? false) || (options?.supportsToolSearch ?? false),
 	);
+	let hasToolSearchPairs = false;
 	const appendSystemToolAdditions = (message: SystemMessage, seed: string): void => {
 		const tools = transcriptTools.anchorsAdditions ? (message.toolsAdded ?? []) : [];
 		if (tools.length === 0) return;
@@ -209,6 +211,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			status: "completed",
 			tools: convertResponsesTools(tools, { ...options.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
+		hasToolSearchPairs = true;
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
@@ -350,6 +353,13 @@ export function convertResponsesMessages<TApi extends Api>(
 		if (!isLeadingSystemMessage) msgIndex++;
 	}
 
+	if (options?.requiresToolSearchTrailingNote && hasToolSearchPairs) {
+		messages.push({
+			role: "developer",
+			content:
+				"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
+		});
+	}
 	return messages;
 }
 
