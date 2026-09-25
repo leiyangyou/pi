@@ -277,8 +277,8 @@ function sameMessages(left: AgentMessage[], right: AgentMessage[]): boolean {
  * Re-attach the prompt and tool state after a `context` handler. Handlers only see the
  * conversation; the system messages belong to Pi. An unchanged conversation keeps every
  * system message in place, so models with mid-conversation support keep their cached
- * prefix. A changed one gets the replayed prompt sections and tool declarations as one
- * leading system message, so pruning, windowing, or slicing from a compaction summary
+ * prefix. Appending to that conversation preserves the same checkpoints. Other changes
+ * replay the prompt and tool declarations into a leading system message, so pruning
  * cannot drop them.
  */
 function restoreSystemMessages(
@@ -287,6 +287,9 @@ function restoreSystemMessages(
 	returned: AgentMessage[],
 ): AgentMessage[] {
 	if (sameMessages(returned, visible)) return current;
+	if (returned.length > visible.length && visible.every((message, index) => message === returned[index])) {
+		return [...current, ...returned.slice(visible.length)];
+	}
 	const head = getCurrentSystemMessage(current);
 	return head ? [head, ...returned] : returned;
 }
