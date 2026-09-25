@@ -129,6 +129,7 @@ export interface ConvertResponsesMessagesOptions {
 	supportsMidConvoSystemMessages?: boolean;
 	supportsAdditionalTools?: boolean;
 	supportsToolSearch?: boolean;
+	requiresToolSearchTrailingNote?: boolean;
 	toolOptions?: ConvertResponsesToolsOptions;
 	/**
 	 * Effort for the reply being generated. When set, the thinking level is sent as
@@ -228,6 +229,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	let declaredAdditionalTools = false;
 	/** Tools announced as removed and not declared again since. */
 	const unavailableTools = new Set<string>();
+	let hasToolSearchPairs = false;
 	const appendSystemToolAdditions = (message: SystemMessage, seed: string): void => {
 		const tools = message.toolsAdded ?? [];
 		for (const tool of tools) unavailableTools.delete(tool.name);
@@ -261,6 +263,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			status: "completed",
 			tools: convertResponsesTools(tools, { ...options?.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
+		hasToolSearchPairs = true;
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const pushConfigurationUpdate = (effort: string): void => {
@@ -428,6 +431,13 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 	if (options?.configurationUpdateEffort !== undefined) pushConfigurationUpdate(options.configurationUpdateEffort);
 
+	if (options?.requiresToolSearchTrailingNote && hasToolSearchPairs) {
+		messages.push({
+			role: "developer",
+			content:
+				"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
+		});
+	}
 	return messages;
 }
 

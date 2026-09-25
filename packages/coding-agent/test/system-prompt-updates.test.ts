@@ -130,18 +130,20 @@ describe("system prompt updates", () => {
 			const systemMessages = requests.map((request) =>
 				request.messages.filter((message) => message.role === "system"),
 			);
-			// Forced turns collapse to one leading message; the unforced fourth turn passes the
-			// recorded head and both plan_mode patches through.
-			expect(systemMessages.map((messages) => messages.length)).toEqual([1, 1, 1, 3]);
+			// Forced turns keep tool-history positions while masking prompt patches; the
+			// unforced fourth turn passes the recorded head and both patches through.
+			expect(systemMessages.map((messages) => messages.length)).toEqual([1, 1, 2, 3]);
 
-			const forced = systemMessages[1]?.at(-1);
+			const forced = systemMessages[1]?.[0];
 			expect(forced).toEqual({
 				role: "system",
 				content: "Exact prompt.",
 				toolsAdded: systemMessages[0]?.[0]?.toolsAdded,
 				timestamp: systemMessages[0]?.[0]?.timestamp,
 			});
-			expect(systemMessages[2]?.at(-1)).toEqual(forced);
+			expect(systemMessages[2]?.[0]).toEqual(forced);
+			expect(systemMessages[2]?.[1]).toMatchObject({ role: "system", content: "" });
+			expect(systemMessages[2]?.[1]).not.toHaveProperty("sections");
 			expect(getCurrentSystemPrompt(requests[2]!.messages)).toBe("Exact prompt.");
 			expect(requests[2]!.messages.map((message) => message.role)).toEqual([
 				"system",
@@ -149,6 +151,7 @@ describe("system prompt updates", () => {
 				"assistant",
 				"user",
 				"assistant",
+				"system",
 				"user",
 			]);
 

@@ -390,6 +390,13 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 				default: false,
 			}),
 		),
+		requiresToolSearchTrailingNote: Type.Optional(
+			Type.Boolean({
+				description:
+					"Add a stable trailing developer note on every request with client tool-search pairs.",
+				default: false,
+			}),
+		),
 		supportsExplicitPromptCacheMode: Type.Optional(
 			Type.Boolean({
 				description: "Whether the model accepts prompt_cache_options. Older OpenAI models reject the parameter.",

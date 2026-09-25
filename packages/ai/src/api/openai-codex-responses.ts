@@ -567,6 +567,7 @@ function buildRequestBody(
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		supportsAdditionalTools,
 		supportsToolSearch,
+		requiresToolSearchTrailingNote: model.compat?.requiresToolSearchTrailingNote ?? false,
 		toolOptions: { strict: null, supportsStrictMode, supportsOpenAIGrammarTools },
 	});
 
