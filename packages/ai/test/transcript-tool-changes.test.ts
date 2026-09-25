@@ -240,6 +240,50 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool"]);
 	});
 
+	test("keeps a trailing note after anchored additions on every pair-bearing request", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
+			api: "openai-responses",
+			provider: "deepseek",
+			compat: {
+				supportsDeveloperRole: false,
+				supportsMidConvoSystemMessages: true,
+				supportsToolSearch: true,
+				requiresToolSearchTrailingNote: true,
+			},
+		};
+		type Payload = {
+			tools?: Array<{ name: string }>;
+			input: Array<{
+				type?: string;
+				role?: string;
+				content?: string;
+				call_id?: string;
+				tools?: Array<{ name: string }>;
+			}>;
+		};
+		const current = await capturePayload<Payload>(model, additionContext);
+		const followup = await capturePayload<Payload>(model, {
+			messages: [...additionContext.messages, { role: "user", content: "after", timestamp: 3 }],
+		});
+		for (const payload of [current, followup]) {
+			expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
+			expect(payload.input.at(-1)).toEqual({
+				role: "developer",
+				content:
+					"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
+			});
+			expect(
+				payload.input.find((item) => item.type === "tool_search_output")?.tools?.map((tool) => tool.name),
+			).toEqual(["late_tool"]);
+		}
+		const pair = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_call");
+		expect(pair(current)).toBe(pair(followup));
+		expect(current.input[pair(current)]?.call_id).toBe(followup.input[pair(followup)]?.call_id);
+	});
+
 	test("folds OpenAI updates into the leading developer message without native support", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
@@ -276,6 +320,45 @@ describe("transcript system messages", () => {
 		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
 		expect(payload.input.some((item) => item.type === "additional_tools")).toBe(false);
 		expect(payload.input.filter((item) => item.role === "developer")).toHaveLength(2);
+	});
+
+	test("uses the latest definition after a same-name tool change", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
+			api: "openai-responses",
+			provider: "deepseek",
+			compat: {
+				supportsMidConvoSystemMessages: true,
+				supportsToolSearch: true,
+				requiresToolSearchTrailingNote: true,
+			},
+		};
+		const payload = await capturePayload<{
+			tools?: Array<{ name: string; description: string }>;
+			input: Array<{ type?: string; role?: string; content?: string }>;
+		}>(model, {
+			messages: [
+				{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
+				{ role: "user", content: "before", timestamp: 1 },
+				{
+					role: "system",
+					content: "",
+					toolsAdded: [{ ...baseTool, description: "Updated contract" }],
+					timestamp: 2,
+				},
+			],
+		});
+		expect(payload.tools?.map(({ name, description }) => ({ name, description }))).toEqual([
+			{ name: "base_tool", description: "Updated contract" },
+		]);
+		expect(payload.input.some((item) => item.type === "tool_search_call")).toBe(false);
+		expect(
+			payload.input.some(
+				(item) => item.role === "developer" && item.content?.startsWith("Tool definitions were updated"),
+			),
+		).toBe(false);
 	});
 
 	test("anchors Kimi additions in tool-bearing system messages", async () => {
