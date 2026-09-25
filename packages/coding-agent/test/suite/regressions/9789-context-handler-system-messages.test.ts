@@ -108,6 +108,49 @@ describe("context handlers and system messages", () => {
 		expect(systemMessages[1]?.sections).toEqual({ plan_mode: "<plan_mode>\nPlan only.\n</plan_mode>" });
 	});
 
+	it.each(["returned array", "in-place append"])(
+		"preserves tool checkpoints when context appends a note via %s",
+		async (mode) => {
+			let turn = 0;
+			const note: AgentMessage = { role: "user", content: [{ type: "text", text: "extension note" }], timestamp: 0 };
+			const harness = await createHarness({
+				initialActiveToolNames: ["read"],
+				extensionFactories: [
+					(pi) => {
+						pi.on("context", async (event) => {
+							if (++turn !== 2) return;
+							if (mode === "returned array") return { messages: [...event.messages, note] };
+							event.messages.push(note);
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			harness.setResponses([fauxAssistantMessage("first answer")]);
+			await harness.session.prompt("first");
+			harness.session.setActiveToolsByName(["read", "bash"]);
+			const getRequest = captureRequest(harness, "second answer");
+
+			await harness.session.prompt("second");
+
+			const request = getRequest();
+			expect(request.messages.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"system",
+				"user",
+				"user",
+			]);
+			expect(
+				request.messages
+					.filter((message) => message.role === "system")
+					.map((message) => message.toolsAdded?.map((tool) => tool.name) ?? []),
+			).toEqual([["read"], ["bash"]]);
+			expect(request.messages.at(-1)).toEqual(note);
+		},
+	);
+
 	it("applies in-place edits to event.messages without a return value", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
