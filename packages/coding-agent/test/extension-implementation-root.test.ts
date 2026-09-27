@@ -196,8 +196,8 @@ describe("user package extension implementation root", () => {
 		},
 	);
 	it.each(["npm", "git"])("does not inherit selector across same-identity project %s replacement", async (kind) => {
-		const userSource = kind === "npm" ? "npm:fixture-policy@1.0.0" : "git:github.com/pi-fixture/policy#old";
-		const projectSource = kind === "npm" ? "npm:fixture-policy@2.0.0" : "git:github.com/pi-fixture/policy#new";
+		const userSource = kind === "npm" ? "npm:fixture-policy@1.0.0" : "git:github.com/pi-fixture/policy@old";
+		const projectSource = kind === "npm" ? "npm:fixture-policy@2.0.0" : "git:github.com/pi-fixture/policy@new";
 		const suffix = kind === "npm" ? "npm/node_modules/fixture-policy" : "git/github.com/pi-fixture/policy";
 		cpSync(original, join(agentDir, suffix), { recursive: true });
 		const projectRoot = join(cwd, ".pi", suffix);
