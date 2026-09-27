@@ -88,6 +88,39 @@ export interface ResolvedPaths {
 	themes: ResolvedResource[];
 }
 
+export function rejectCollidingExtensionImplementations(resources: ResolvedResource[]): void {
+	if (!resources.some((resource) => resource.resolvedPath !== undefined)) return;
+	const originals = new Map<ResolvedResource, string>();
+	for (const resource of resources) {
+		if (!resource.enabled) continue;
+		try {
+			originals.set(resource, realpathSync(resource.path));
+		} catch {}
+	}
+	let rejected = false;
+	// ponytail: quadratic in mapped packages on cascading fallback; index reverse paths if large sets need it.
+	while (true) {
+		const owners = new Map<string, ResolvedResource>();
+		const collisions = new Set<string>();
+		for (const [resource, original] of originals) {
+			const actual = resource.resolvedPath ?? original;
+			const previous = owners.get(actual);
+			if (previous && previous.path !== resource.path) {
+				if (previous.resolvedPath && previous.metadata.packageRoot) collisions.add(previous.metadata.packageRoot);
+				if (resource.resolvedPath && resource.metadata.packageRoot) collisions.add(resource.metadata.packageRoot);
+			}
+			owners.set(actual, resource);
+		}
+		if (!collisions.size) break;
+		rejected = true;
+		for (const resource of resources) {
+			if (resource.metadata.packageRoot && collisions.has(resource.metadata.packageRoot))
+				delete resource.resolvedPath;
+		}
+	}
+	if (rejected) console.error("Colliding extensionImplementationRoot mappings; loading the entire original packages.");
+}
+
 export type MissingSourceAction = "install" | "skip" | "error";
 
 export interface ProgressEvent {
@@ -1381,22 +1414,7 @@ export class DefaultPackageManager implements PackageManager {
 				console.error("Invalid extensionImplementationRoot mapping; loading the entire original package.");
 			}
 		}
-		const owners = new Map<string, ResolvedResource>();
-		const collisions = new Set<string | undefined>();
-		for (const resource of resources) {
-			if (!resource.resolvedPath) continue;
-			const previous = owners.get(resource.resolvedPath);
-			if (previous && previous.path !== resource.path) {
-				collisions.add(previous.metadata.packageRoot);
-				collisions.add(resource.metadata.packageRoot);
-			}
-			owners.set(resource.resolvedPath, resource);
-		}
-		for (const resource of resources) {
-			if (collisions.has(resource.metadata.packageRoot)) delete resource.resolvedPath;
-		}
-		if (collisions.size)
-			console.error("Colliding extensionImplementationRoot mappings; loading the entire original packages.");
+		rejectCollidingExtensionImplementations(resources);
 	}
 
 	private findAutoloadDeltaBase(
