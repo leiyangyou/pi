@@ -1375,6 +1375,7 @@ export class DefaultPackageManager implements PackageManager {
 				const requested = group[0].metadata.extensionImplementationRoot;
 				if (!original || typeof requested !== "string" || !isAbsolute(requested)) throw new Error();
 				const root = realpathSync(requested);
+				if (within(root, realpathSync(original))) throw new Error();
 				const forbidden = [
 					original,
 					join(this.agentDir, "npm"),
