@@ -166,7 +166,7 @@ describe("user package extension implementation root", () => {
 			expect(evaluated()).not.toContain("candidate:b:");
 		},
 	);
-	it.each(["missing", "escape", "version", "duplicate", "relative", "shared"])(
+	it.each(["missing", "escape", "version", "duplicate", "relative", "shared", "ancestor"])(
 		"falls back whole package before candidate evaluation for %s",
 		async (failure) => {
 			if (failure === "missing") rmSync(join(candidate, "b.js"));
@@ -182,6 +182,11 @@ describe("user package extension implementation root", () => {
 					join(candidate, "package.json"),
 					JSON.stringify({ name: "fixture-policy", version: "2.0.0" }),
 				);
+			if (failure === "ancestor") {
+				for (const entry of ["package.json", "a.js", "b.js", "helper.js", "asset.txt"])
+					cpSync(join(candidate, entry), join(cwd, entry));
+				candidate = cwd;
+			}
 			const manager = settings();
 			if (failure === "relative")
 				manager.setPackages([{ source: original, extensionImplementationRoot: "candidate" }]);
