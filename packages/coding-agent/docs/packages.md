@@ -126,4 +126,14 @@ The same package can appear in personal and project settings. A project entry no
 
 Pi identifies npm packages by package name, git packages by repository URL without the ref, and local packages by resolved absolute path. This prevents the same package from loading twice through equivalent declarations.
 
+### Select a separate extension implementation
+
+A personal (user-scope) object entry may set `extensionImplementationRoot` to an absolute path containing a separately staged, complete package. Keep `source` unchanged. Project-scoped selectors are ignored with a diagnostic. A full project replacement, including a different version/ref, does not inherit the personal selector; an `autoload: false` project delta retains its personal base's selector.
+
+Pi discovers and filters the original package first. Only enabled extension entry points are mapped by package-relative path; skills, prompts, themes, ordering and configuration identity stay original. `Extension.path` identifies the original entry; `resolvedPath` and executable `baseDir` identify the candidate. Relative imports and module-relative file reads use candidate code. Older hosts ignore the selector and continue loading original code.
+
+The candidate must be outside the original package and shared install trees, have matching manifest name/version, and contain every enabled entry. Entry realpaths must stay inside the candidate, without distinct entries collapsing onto one file. Failed validation visibly falls back to the whole original package before evaluating any candidate. Import/factory failure instead aborts initialization; it does not silently omit policy or retry original code after candidate side effects. Fix the selection and reload explicitly.
+
+Keep staged trees immutable: validation is not a sandbox or protection against concurrent filesystem changes. Existing pre-trust behavior is unchanged: personal extensions can run before trust resolution, even if a later project override excludes them.
+
 Use [Extensions](extensions.md), [Skills](skills.md), [Prompt Templates](prompt-templates.md), and [Themes](themes.md) to design each resource before packaging it.

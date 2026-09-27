@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -32,7 +33,7 @@ function getEnv(): NodeJS.ProcessEnv {
 	}
 }
 
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
@@ -71,10 +72,12 @@ export interface PathMetadata {
 	origin: "package" | "top-level";
 	baseDir?: string;
 	packageRoot?: string;
+	extensionImplementationRoot?: string;
 }
 
 export interface ResolvedResource {
 	path: string;
+	resolvedPath?: string;
 	enabled: boolean;
 	metadata: PathMetadata;
 }
@@ -985,7 +988,9 @@ export class DefaultPackageManager implements PackageManager {
 			);
 		}
 
-		return this.toResolvedPaths(accumulator);
+		const result = this.toResolvedPaths(accumulator);
+		this.mapExtensionImplementations(result.extensions);
+		return result;
 	}
 
 	async resolveExtensionSources(
@@ -1292,6 +1297,12 @@ export class DefaultPackageManager implements PackageManager {
 			const resolvedScope = deltaBase?.scope ?? scope;
 			const parsed = this.parseSource(resolvedSource);
 			const metadata: PathMetadata = { source: sourceStr, scope, origin: "package" };
+			if (scope === "project" && filter?.extensionImplementationRoot !== undefined) {
+				console.error("Ignoring project-scoped extensionImplementationRoot.");
+			}
+			const implementationRoot =
+				scope === "user" ? filter?.extensionImplementationRoot : deltaBase?.extensionImplementationRoot;
+			if (implementationRoot !== undefined) metadata.extensionImplementationRoot = implementationRoot;
 
 			if (parsed.type === "local") {
 				const baseDir = this.getBaseDirForScope(resolvedScope);
@@ -1342,11 +1353,87 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
+	private mapExtensionImplementations(resources: ResolvedResource[]): void {
+		const groups = new Map<string, ResolvedResource[]>();
+		for (const resource of resources) {
+			if (!resource.enabled || resource.metadata.extensionImplementationRoot === undefined) continue;
+			const key = resource.metadata.packageRoot ?? resource.path;
+			const group = groups.get(key) ?? [];
+			group.push(resource);
+			groups.set(key, group);
+		}
+		const within = (root: string, path: string): boolean => {
+			const child = relative(root, path);
+			return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
+		};
+		for (const group of groups.values()) {
+			try {
+				const original = group[0].metadata.packageRoot;
+				const requested = group[0].metadata.extensionImplementationRoot;
+				if (!original || typeof requested !== "string" || !isAbsolute(requested)) throw new Error();
+				const root = realpathSync(requested);
+				const forbidden = [
+					original,
+					join(this.agentDir, "npm"),
+					join(this.agentDir, "git"),
+					join(this.cwd, CONFIG_DIR_NAME, "npm"),
+					join(this.cwd, CONFIG_DIR_NAME, "git"),
+				];
+				for (let ancestor = realpathSync(original); dirname(ancestor) !== ancestor; ancestor = dirname(ancestor)) {
+					if (basename(ancestor) === "node_modules") forbidden.push(dirname(ancestor));
+					if (basename(ancestor) === ".pnpm") forbidden.push(ancestor);
+				}
+				if (forbidden.some((path) => within(existsSync(path) ? realpathSync(path) : resolve(path), root)))
+					throw new Error();
+				const baseline = JSON.parse(readFileSync(join(original, "package.json"), "utf8"));
+				const candidate = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+				if (
+					typeof baseline.name !== "string" ||
+					typeof baseline.version !== "string" ||
+					!baseline.name ||
+					!baseline.version ||
+					candidate.name !== baseline.name ||
+					candidate.version !== baseline.version
+				)
+					throw new Error();
+				const seen = new Set<string>();
+				const mapped = group.map((resource) => {
+					if (!within(original, resource.path)) throw new Error();
+					const path = realpathSync(join(root, relative(original, resource.path)));
+					if (!within(root, path) || !statSync(path).isFile() || seen.has(path)) throw new Error();
+					seen.add(path);
+					return path;
+				});
+				group.forEach((resource, index) => {
+					resource.resolvedPath = mapped[index];
+				});
+			} catch {
+				console.error("Invalid extensionImplementationRoot mapping; loading the entire original package.");
+			}
+		}
+		const owners = new Map<string, ResolvedResource>();
+		const collisions = new Set<string | undefined>();
+		for (const resource of resources) {
+			if (!resource.resolvedPath) continue;
+			const previous = owners.get(resource.resolvedPath);
+			if (previous && previous.path !== resource.path) {
+				collisions.add(previous.metadata.packageRoot);
+				collisions.add(resource.metadata.packageRoot);
+			}
+			owners.set(resource.resolvedPath, resource);
+		}
+		for (const resource of resources) {
+			if (collisions.has(resource.metadata.packageRoot)) delete resource.resolvedPath;
+		}
+		if (collisions.size)
+			console.error("Colliding extensionImplementationRoot mappings; loading the entire original packages.");
+	}
+
 	private findAutoloadDeltaBase(
 		pkg: PackageSource,
 		scope: SourceScope,
 		sources: Array<{ pkg: PackageSource; scope: SourceScope }>,
-	): { source: string; scope: SourceScope } | undefined {
+	): { source: string; scope: SourceScope; extensionImplementationRoot?: string } | undefined {
 		if (scope !== "project" || typeof pkg !== "object" || pkg.autoload !== false) return undefined;
 		const identity = this.getPackageIdentity(pkg.source, scope);
 		const userEntry = sources.find(
@@ -1354,7 +1441,15 @@ export class DefaultPackageManager implements PackageManager {
 				entry.scope === "user" &&
 				this.getPackageIdentity(this.getPackageSourceString(entry.pkg), "user") === identity,
 		);
-		return userEntry ? { source: this.getPackageSourceString(userEntry.pkg), scope: "user" } : undefined;
+		return userEntry
+			? {
+					source: this.getPackageSourceString(userEntry.pkg),
+					scope: "user",
+					...(typeof userEntry.pkg === "object"
+						? { extensionImplementationRoot: userEntry.pkg.extensionImplementationRoot }
+						: {}),
+				}
+			: undefined;
 	}
 
 	private resolveLocalExtensionSource(
