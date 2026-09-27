@@ -101,6 +101,7 @@ export type PackageSource =
 	| {
 			source: string;
 			autoload?: boolean;
+			extensionImplementationRoot?: string;
 			extensions?: string[];
 			skills?: string[];
 			prompts?: string[];
