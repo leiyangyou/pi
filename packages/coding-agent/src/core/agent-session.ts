@@ -2016,6 +2016,7 @@ export class AgentSession {
 			expandedText,
 			currentImages,
 			this._baseSystemPromptOptions,
+			() => this.getActiveToolNames(),
 		);
 		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
 		// which updates the live loadout instead. An explicit edit wins; otherwise the live
