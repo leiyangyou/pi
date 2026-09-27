@@ -229,6 +229,47 @@ describe("user package extension implementation root", () => {
 		expect(evaluated()).not.toContain("candidate:");
 		expect(diagnostic).toHaveBeenCalled();
 	});
+	it("does not collapse mapped code onto an enabled unmapped package entry", async () => {
+		const manager = settings();
+		manager.setPackages([{ source: original, extensionImplementationRoot: candidate }, candidate]);
+		const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+		const resources = loader(manager);
+		await resources.reload();
+		expect(evaluated().match(/candidate:a:factory/g)).toHaveLength(1);
+		expect(evaluated()).toContain("original:a:factory");
+		expect(diagnostic).toHaveBeenCalled();
+	});
+	it("validates executable collisions after CLI entries join the load set", async () => {
+		const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+		const resources = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager: settings(),
+			additionalExtensionPaths: [join(candidate, "a.js")],
+		});
+		await resources.reload();
+		expect(evaluated().match(/candidate:a:factory/g)).toHaveLength(1);
+		expect(evaluated()).toContain("original:a:factory");
+		expect(evaluated()).not.toContain("candidate:b:factory");
+		expect(diagnostic).toHaveBeenCalled();
+	});
+	it("revalidates collisions introduced by whole-package fallback", async () => {
+		const roots = [original, ...[1, 2, 3].map((index) => join(cwd, `cascade-${index}`))];
+		for (const root of roots.slice(1)) cpSync(original, root, { recursive: true });
+		const manager = settings();
+		manager.setPackages(
+			roots.map((source, index) => ({
+				source,
+				...(index < 3 ? { extensionImplementationRoot: roots[index + 1] } : {}),
+			})),
+		);
+		const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+		const resources = loader(manager);
+		await resources.reload();
+		for (const extension of resources.getExtensions().extensions) expect(extension.resolvedPath).toBe(extension.path);
+		expect(resources.getExtensions().extensions).toHaveLength(8);
+		expect(diagnostic).toHaveBeenCalledTimes(1);
+	});
 	it.each(["npm", "git"])("rejects root inside shared %s tree", async (kind) => {
 		const shared = join(agentDir, kind, "candidate");
 		cpSync(candidate, shared, { recursive: true });
