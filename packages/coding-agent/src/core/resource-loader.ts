@@ -27,7 +27,12 @@ import type {
 	LoadExtensionsResult,
 } from "./extensions/types.ts";
 import { findGitPaths } from "./footer-data-provider.ts";
-import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import {
+	DefaultPackageManager,
+	type PathMetadata,
+	type ResolvedResource,
+	rejectCollidingExtensionImplementations,
+} from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -679,6 +684,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private extensionLoadPaths(paths: string[], resources: ResolvedResource[]): ExtensionLoadPath[] {
+		rejectCollidingExtensionImplementations(resources);
 		const mapped = new Map<string, string>();
 		for (const resource of resources) {
 			if (resource.enabled && resource.resolvedPath !== undefined) mapped.set(resource.path, resource.resolvedPath);
