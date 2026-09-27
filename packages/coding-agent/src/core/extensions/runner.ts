@@ -1415,9 +1415,20 @@ export class ExtensionRunner {
 		prompt: string,
 		images: ImageContent[] | undefined,
 		systemPromptOptions: BuildSystemPromptOptions,
+		getActiveToolNames?: () => string[],
 	): Promise<BeforeAgentStartCombinedResult> {
 		const currentOptions = normalizeBuildSystemPromptOptions(systemPromptOptions);
-		const renderCurrentSystemPrompt = (): string => buildSystemPrompt(currentOptions);
+		const initialSelectedTools = [...currentOptions.selectedTools];
+		const renderCurrentSystemPrompt = (): string => {
+			const handlerEditedTools =
+				currentOptions.selectedTools.length !== initialSelectedTools.length ||
+				currentOptions.selectedTools.some((name, index) => name !== initialSelectedTools[index]);
+			return buildSystemPrompt(
+				getActiveToolNames && !handlerEditedTools && currentOptions.forceSystemPrompt === undefined
+					? { ...currentOptions, selectedTools: getActiveToolNames() }
+					: currentOptions,
+			);
+		};
 		const ctx = Object.defineProperties(
 			{},
 			Object.getOwnPropertyDescriptors(this.createContext()),
