@@ -624,19 +624,31 @@ async function initializeExtension(
 	return extension;
 }
 
+export type ExtensionLoadPath = string | Pick<Extension, "path" | "resolvedPath">;
+
+export class ExtensionImplementationError extends Error {
+	constructor(path: string, resolvedPath: string) {
+		super(`Extension implementation failed: ${path.slice(0, 1024)} -> ${resolvedPath.slice(0, 1024)}`);
+	}
+}
+
 async function loadExtension(
-	extensionPath: string,
+	input: ExtensionLoadPath,
 	cwd: string,
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 	cacheToken?: ExtensionCacheToken,
 ): Promise<{ extension: Extension | null; error: string | null }> {
-	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
+	const extensionPath = typeof input === "string" ? input : input.path;
+	const resolvedPath = resolvePath(typeof input === "string" ? input : input.resolvedPath, cwd, {
+		normalizeUnicodeSpaces: true,
+	});
 
 	try {
 		const factory = await loadExtensionModule(resolvedPath, cacheToken);
 		time(`${extensionPath} module import`, "extensions");
 		if (!factory) {
+			if (typeof input !== "string") throw new ExtensionImplementationError(extensionPath, resolvedPath);
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
 
@@ -644,6 +656,7 @@ async function loadExtension(
 
 		return { extension, error: null };
 	} catch (err) {
+		if (typeof input !== "string") throw new ExtensionImplementationError(extensionPath, resolvedPath);
 		const message = err instanceof Error ? err.message : String(err);
 		return { extension: null, error: `Failed to load extension: ${message}` };
 	}
@@ -667,7 +680,7 @@ export async function loadExtensionFromFactory(
  * Load extensions from paths.
  */
 async function loadExtensionsInternal(
-	paths: string[],
+	paths: ExtensionLoadPath[],
 	cwd: string,
 	eventBus?: EventBus,
 	runtime?: ExtensionRuntime,
@@ -691,7 +704,7 @@ async function loadExtensionsInternal(
 		);
 
 		if (error) {
-			errors.push({ path: extPath, error });
+			errors.push({ path: typeof extPath === "string" ? extPath : extPath.path, error });
 			continue;
 		}
 
@@ -718,7 +731,7 @@ export async function loadExtensions(
 }
 
 export async function loadExtensionsCached(
-	paths: string[],
+	paths: ExtensionLoadPath[],
 	cwd: string,
 	eventBus?: EventBus,
 	runtime?: ExtensionRuntime,

@@ -14,6 +14,8 @@ import { createEventBus, type EventBus } from "./event-bus.ts";
 import {
 	clearExtensionCache,
 	createExtensionRuntime,
+	ExtensionImplementationError,
+	type ExtensionLoadPath,
 	loadExtensionFromFactory,
 	loadExtensionsCached,
 } from "./extensions/loader.ts";
@@ -364,6 +366,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private lastPromptPaths: string[];
 	private lastThemePaths: string[];
 	private loaded: boolean;
+	private extensionImplementationFailure?: ExtensionImplementationError;
 
 	constructor(options: DefaultResourceLoaderOptions) {
 		this.cwd = resolvePath(options.cwd);
@@ -419,6 +422,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	getExtensions(): LoadExtensionsResult {
+		if (this.extensionImplementationFailure) throw this.extensionImplementationFailure;
 		return this.extensionsResult;
 	}
 
@@ -571,7 +575,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 			: this.mergePaths(cliEnabledExtensions, enabledExtensions);
 
 		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
-		const extensionsResult = await this.loadFinalExtensionSet(extensionPaths, preTrustExtensions);
+		const extensionsResult = await this.loadFinalExtensionSet(
+			this.extensionLoadPaths(
+				extensionPaths,
+				this.noExtensions
+					? cliExtensionPaths.extensions
+					: [...cliExtensionPaths.extensions, ...resolvedPaths.extensions],
+			),
+			preTrustExtensions,
+		);
 		mergeExtensionWarnings(extensionsResult, packageWarnings);
 		for (const p of this.additionalExtensionPaths) {
 			if (isLocalPath(p)) {
@@ -663,6 +675,27 @@ export class DefaultResourceLoader implements ResourceLoader {
 			.filter((source) => existsSync(source))
 			.map((source) => resolvePath(source));
 		this.loaded = true;
+		this.extensionImplementationFailure = undefined;
+	}
+
+	private extensionLoadPaths(paths: string[], resources: ResolvedResource[]): ExtensionLoadPath[] {
+		const mapped = new Map<string, string>();
+		for (const resource of resources) {
+			if (resource.enabled && resource.resolvedPath !== undefined) mapped.set(resource.path, resource.resolvedPath);
+		}
+		return paths.map((path) => {
+			const resolvedPath = mapped.get(path);
+			return resolvedPath === undefined ? path : { path, resolvedPath };
+		});
+	}
+
+	private async loadExtensions(paths: ExtensionLoadPath[], runtime?: ExtensionRuntime): Promise<LoadExtensionsResult> {
+		try {
+			return await loadExtensionsCached(paths, this.cwd, this.eventBus, runtime);
+		} catch (error) {
+			if (error instanceof ExtensionImplementationError) this.extensionImplementationFailure = error;
+			throw error;
+		}
 	}
 
 	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {
@@ -684,7 +717,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 			]),
 		);
 		const packageWarnings = collectExtensionPackageWarnings(extensionPaths, metadataByPath);
-		const extensionsResult = await loadExtensionsCached(extensionPaths, this.cwd, this.eventBus);
+		const extensionsResult = await this.loadExtensions(
+			this.extensionLoadPaths(
+				extensionPaths,
+				this.noExtensions
+					? cliExtensionPaths.extensions
+					: [...cliExtensionPaths.extensions, ...resolvedPaths.extensions],
+			),
+		);
 		mergeExtensionWarnings(extensionsResult, packageWarnings);
 		if (!options.includeInlineFactories) {
 			return extensionsResult;
@@ -699,20 +739,22 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return extensionsResult;
 	}
 
-	private resolveExtensionLoadPath(path: string): string {
+	private resolveExtensionLoadPath(path: ExtensionLoadPath): string {
+		if (typeof path !== "string") return resolvePath(path.resolvedPath, this.cwd, { normalizeUnicodeSpaces: true });
 		return isSyntheticPath(path) ? path : resolvePath(path, this.cwd, { normalizeUnicodeSpaces: true });
 	}
 
 	/** Load extension paths: files from disk and `builtin:<name>` paths from the built-in extensions. */
-	private async loadExtensionPaths(paths: string[], runtime?: ExtensionRuntime): Promise<LoadExtensionsResult> {
-		const isBuiltinPath = (path: string) => path.startsWith(BUILTIN_PATH_PREFIX);
+	private async loadExtensionPaths(paths: ExtensionLoadPath[], runtime?: ExtensionRuntime): Promise<LoadExtensionsResult> {
+		const isBuiltinPath = (path: ExtensionLoadPath) => typeof path === "string" && path.startsWith(BUILTIN_PATH_PREFIX);
 		const result = await loadExtensionsCached(
 			paths.filter((path) => !isBuiltinPath(path)),
 			this.cwd,
 			this.eventBus,
 			runtime,
 		);
-		for (const path of paths.filter(isBuiltinPath)) {
+		for (const path of paths) {
+			if (typeof path !== "string" || !path.startsWith(BUILTIN_PATH_PREFIX)) continue;
 			const builtin = this.builtinExtensions.get(path.slice(BUILTIN_PATH_PREFIX.length));
 			if (!builtin) {
 				result.errors.push({ path, error: `Unknown built-in extension: ${path}` });
@@ -737,7 +779,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private async loadFinalExtensionSet(
-		extensionPaths: string[],
+		extensionPaths: ExtensionLoadPath[],
 		preTrustExtensions: LoadExtensionsResult | undefined,
 	): Promise<LoadExtensionsResult> {
 		// Without a pre-trust pass nothing is preloaded, and inline extensions load here.
@@ -908,6 +950,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 			extension.sourceInfo =
 				this.findSourceInfoForPath(extension.path, undefined, metadataByPath) ??
 				this.getDefaultSourceInfoForPath(extension.path);
+			if (extension.path !== extension.resolvedPath) {
+				extension.sourceInfo = { ...extension.sourceInfo, baseDir: dirname(extension.resolvedPath) };
+			}
 			for (const command of extension.commands.values()) {
 				command.sourceInfo = extension.sourceInfo;
 			}
