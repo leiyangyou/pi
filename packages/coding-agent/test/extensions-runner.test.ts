@@ -847,6 +847,84 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("before_agent_start", () => {
+		it("renders live tool changes in both getters without changing explicit-selection precedence", async () => {
+			const runtime = createExtensionRuntime();
+			const observed: Array<{ event: string; context: string; selected: string[]; sameArray: boolean }> = [];
+			let live = ["read", "denied"];
+			const extension = await loadExtensionFromFactory(
+				(pi) => {
+					pi.on("before_agent_start", (event, ctx) => {
+						const inspect = () => {
+							const selected = event.systemPromptOptions.selectedTools;
+							const eventPrompt = event.systemPrompt;
+							const contextPrompt = ctx.getSystemPrompt();
+							observed.push({
+								event: eventPrompt,
+								context: contextPrompt,
+								selected: [...event.systemPromptOptions.selectedTools],
+								sameArray: selected === event.systemPromptOptions.selectedTools,
+							});
+						};
+						pi.setActiveTools(["read"]);
+						inspect();
+						pi.setActiveTools(["read", "late"]);
+						inspect();
+						event.systemPromptOptions.selectedTools = ["explicit"];
+						inspect();
+						return { systemPrompt: event.systemPrompt };
+					});
+				},
+				tempDir,
+				createEventBus(),
+				runtime,
+				"<inline:live-tools>",
+			);
+			const runner = new ExtensionRunner([extension], runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(
+				{
+					...extensionActions,
+					getActiveTools: () => live,
+					setActiveTools: (names) => {
+						live = names;
+					},
+				},
+				extensionContextActions,
+			);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(error.error));
+			const original = ["read", "denied"];
+			const result = await runner.emitBeforeAgentStart(
+				"hello",
+				undefined,
+				{
+					cwd: tempDir,
+					selectedTools: original,
+					toolSnippets: {
+						read: "READ_SNIPPET",
+						denied: "DENIED_SNIPPET",
+						late: "LATE_SNIPPET",
+						explicit: "EXPLICIT_SNIPPET",
+					},
+				},
+				() => live,
+			);
+			expect(errors).toEqual([]);
+			expect(observed).toHaveLength(3);
+			for (const sample of observed) {
+				expect(sample.context).toBe(sample.event);
+				expect(sample.sameArray).toBe(true);
+			}
+			expect(observed[0].event).toContain("READ_SNIPPET");
+			expect(observed[0].event).not.toContain("DENIED_SNIPPET");
+			expect(observed[1].event).toContain("LATE_SNIPPET");
+			expect(observed[0].selected).toEqual(["read", "denied"]);
+			expect(observed[1].selected).toEqual(["read", "denied"]);
+			expect(observed[2].event).toContain("EXPLICIT_SNIPPET");
+			expect(observed[2].event).not.toContain("LATE_SNIPPET");
+			expect(result.systemPromptOptions.selectedTools).toEqual(["explicit"]);
+			expect(result.systemPromptOptions.forceSystemPrompt).toBe(observed[2].event);
+			expect(original).toEqual(["read", "denied"]);
+		});
 		it("keeps ctx.getSystemPrompt() in sync with chained system prompt updates", async () => {
 			const extCode1 = `
 				export default function(pi) {
