@@ -324,5 +324,8 @@ describe("head stability across a section-only change", () => {
 		// Mechanism (b): `normalizeContext` prepends a head built from the live `context.systemPrompt`,
 		// so a section change would rewrite item 0. If this holds, the change is an append instead.
 		expect(JSON.stringify(current[0])).toBe(JSON.stringify(previous[0]));
+		// Mechanism (a): `messages.unshift(updateMessage)` in `_runAgentPrompt`. If the patch lands
+		// ahead of what the previous request already sent, the prefix breaks where it lands.
+		expect(firstDivergence(previous, current)).toBeUndefined();
 	});
 });
