@@ -145,23 +145,35 @@ describe("head stability across a snippet-bearing tool activation", () => {
 	});
 });
 
-/**
- * The shape of the live trigger: a `before_agent_start` handler activates a snippet-bearing tool
- * before the request is built, as `create_goal` does. The head stays put, so this is a guard, not a
- * reproduction of the live miss.
- */
-async function runHandlerActivationTurn(activate: (pi: { setActiveTools(names: string[]): void }) => void) {
-	const harness = await createHarness({
-		initialActiveToolNames: ["read"],
-		extensionFactories: [
-			(pi) => {
-				let turn = 0;
-				pi.on("before_agent_start", () => {
-					if (++turn === 2) activate(pi);
-				});
-			},
-		],
+/** The activation the live trigger performs, as `create_goal` and an MCP connect both do. */
+const activateOnSecondTurn: InlineExtension = (pi) => {
+	let turn = 0;
+	pi.on("before_agent_start", () => {
+		if (++turn === 2) pi.setActiveTools(["read", "bash"]);
 	});
+};
+
+/**
+ * context-mode's own carrier. `build/adapters/pi/extension.js:565-566` reads `event.systemPrompt`
+ * into `parts`, and its `context` handler appends the joined result as a user message. So the live
+ * rendered prompt is copied into a conversation item, and whatever moves the render moves that item.
+ */
+const embedLivePrompt: InlineExtension = (pi) => {
+	let pending: string | undefined;
+	pi.on("before_agent_start", (event) => {
+		pending = String(event.systemPrompt ?? "");
+	});
+	pi.on("context", (event) => {
+		if (pending === undefined) return;
+		event.messages.push({ role: "user", content: pending, timestamp: 0 });
+		pending = undefined;
+		return { messages: event.messages };
+	});
+};
+
+/** Two turns, where the second turn's `before_agent_start` grows the active tool set. */
+async function runActivationTurn(extensionFactories: InlineExtension[]) {
+	const harness = await createHarness({ initialActiveToolNames: ["read"], extensionFactories });
 	const captured: TranscriptContext[] = [];
 	respondAndCapture(harness, "first answer", captured);
 	await harness.session.prompt("first");
@@ -178,7 +190,7 @@ describe("head stability when a handler activates a tool at a turn boundary", ()
 	});
 
 	it("activates the tool", async () => {
-		const { harness } = await runHandlerActivationTurn((pi) => pi.setActiveTools(["read", "bash"]));
+		const { harness } = await runActivationTurn([activateOnSecondTurn]);
 		harnesses.push(harness);
 		expect(harness.session.getActiveToolNames()).toEqual(["read", "bash"]);
 	});
@@ -186,20 +198,36 @@ describe("head stability when a handler activates a tool at a turn boundary", ()
 	// A pure addition is not a head change. The session keeps the index it rendered for the run and
 	// declares the addition in a checkpoint, which is what lets `resolveTranscriptTools` anchor it.
 	it("leaves the rendered tool index alone when the activation is an addition", async () => {
-		const { harness, previous, current } = await runHandlerActivationTurn((pi) =>
-			pi.setActiveTools(["read", "bash"]),
-		);
+		const { harness, previous, current } = await runActivationTurn([activateOnSecondTurn]);
 		harnesses.push(harness);
 		expect(headToolsSection(current)).toBe(headToolsSection(previous));
 		expect(headToolsSection(current)).toContain("- read:");
 	});
 
 	it("keeps the previous request as a prefix of the next one", async () => {
-		const { harness, previous, current } = await runHandlerActivationTurn((pi) =>
-			pi.setActiveTools(["read", "bash"]),
-		);
+		const { harness, previous, current } = await runActivationTurn([activateOnSecondTurn]);
 		harnesses.push(harness);
 		expect(firstDivergence(previous ?? [], current ?? [])).toBeUndefined();
+	});
+});
+
+describe("head stability when a carrier copies the live rendered prompt into the conversation", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	// The carrier's copy is appended at its own position, so the divergence it causes is at that
+	// position, not at the head. Turn one sends the block before the assistant reply, which the next
+	// request cannot reproduce, so the prefix ends there. That is the carrier's placement choice and
+	// it is near the tail; the head is what has to stay put, and it does.
+	it("leaves the head at index 0 byte-identical", async () => {
+		const { harness, previous, current } = await runActivationTurn([activateOnSecondTurn, embedLivePrompt]);
+		harnesses.push(harness);
+		expect(current?.[0]?.role).toBe("system");
+		expect(JSON.stringify(current?.[0])).toBe(JSON.stringify(previous?.[0]));
+		expect(headToolsSection(current)).toBe(headToolsSection(previous));
 	});
 });
 
