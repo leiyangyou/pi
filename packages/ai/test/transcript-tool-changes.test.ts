@@ -512,6 +512,36 @@ describe("transcript system messages", () => {
 	});
 
 	// #10940: removals and redeclarations move the top-level boundary once; plain additions stay anchored.
+	// The private change: a removal alone never moves the flat field, because the removed tool keeps
+	// its declaration and slot and a call to it is refused rather than executed. Only a name declared
+	// again moves it, including a re-add, which Kimi K3 otherwise ignores.
+	test("keeps the flat tool field anchored when the only change is a removal", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-responses",
+			provider: "openai",
+			compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
+		};
+		const payload = await capturePayload<{
+			tools?: Array<{ name: string }>;
+			input: Array<{ type?: string; role?: string; tools?: Array<{ name: string }> }>;
+		}>(model, {
+			messages: [
+				{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
+				{ role: "user", content: "before", timestamp: 1 },
+				{ role: "system", content: "", toolsRemoved: [{ name: "base_tool" }], timestamp: 2 },
+				{ role: "user", content: "after", timestamp: 3 },
+			],
+		});
+
+		expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
+		expect(
+			payload.input.filter((item) => item.type === "tool_search_output").map((item) => item.tools?.[0]?.name),
+		).toEqual([]);
+	});
+
 	test("resolves the top-level tool boundary per transport", () => {
 		const messages = [
 			{ role: "system", content: "base prompt", toolsAdded: [baseTool, dropTool], timestamp: 0 },

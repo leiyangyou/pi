@@ -229,6 +229,25 @@ function findLastNonAdditiveToolChange(systemMessages: readonly SystemMessage[])
 }
 
 /**
+ * Index of the last system message that redeclares a name with a different definition, or -1.
+ * A removal is not included: the removed tool keeps its declaration and its top-level slot, and a
+ * call to it is refused rather than executed, so folding the flat field for it would re-bill the
+ * prefix for nothing.
+ */
+function findLastToolRedefinition(systemMessages: readonly SystemMessage[]): number {
+	const declared = new Map<string, Tool>();
+	let last = -1;
+	for (let index = 0; index < systemMessages.length; index++) {
+		for (const tool of systemMessages[index].toolsAdded ?? []) {
+			const previous = declared.get(tool.name);
+			if (previous !== undefined && !declarationsEqual(previous, tool)) last = index;
+			declared.set(tool.name, tool);
+		}
+	}
+	return last;
+}
+
+/**
  * How a transport can express tool changes after the first request.
  *
  * - `"none"`: only the top-level tool list exists; it always holds the current tools.
@@ -256,8 +275,10 @@ export interface TranscriptTools {
  * leading one, declares its tools in place: an in-place declaration can replace an earlier
  * in-place one, but not a top-level one. With `"additions"`, a removal or redefinition cannot be
  * expressed in place, so the top-level list becomes the tool state after the last such change;
- * later additions stay anchored, and the cached prefix is invalidated once per removal instead
- * of on every later addition. With `"none"`, the top-level list is the current tool set.
+ * later additions stay anchored, and the cached prefix is invalidated once per redefinition instead
+ * of on every later addition. A removal alone does not move it: the removed tool keeps its
+ * declaration and slot, and calling it is refused rather than executed. With `"none"`, the
+ * top-level list is the current tool set.
  */
 export function resolveTranscriptTools(messages: TranscriptMessages, support: TranscriptToolSupport): TranscriptTools {
 	const systemMessages = messages.filter(isSystemMessage);
@@ -267,7 +288,7 @@ export function resolveTranscriptTools(messages: TranscriptMessages, support: Tr
 	if (support === "changes") return { requestTools: [], foldedSystemMessages: 0 };
 	const folded = Math.max(
 		getInitialSystemMessage(messages) ? 1 : 0,
-		findLastNonAdditiveToolChange(systemMessages) + 1,
+		findLastToolRedefinition(systemMessages) + 1,
 	);
 	return { requestTools: getCurrentTools(systemMessages.slice(0, folded)), foldedSystemMessages: folded };
 }

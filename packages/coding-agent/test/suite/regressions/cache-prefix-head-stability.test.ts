@@ -120,8 +120,8 @@ describe("head stability across a snippet-bearing tool activation", () => {
 	it("keeps the request's flat tool list anchored when a handler removes a recorded item", async () => {
 		const { harness, current } = await runToolActivationTurn([dropAuditEntries]);
 		harnesses.push(harness);
-		const tools = resolveTranscriptTools(current ?? [], true);
-		expect(tools.anchorsAdditions).toBe(true);
+		const tools = resolveTranscriptTools(current ?? [], "additions");
+		expect(tools.foldedSystemMessages).toBe(1);
 		expect(tools.requestTools.map((tool) => tool.name)).toEqual(["read"]);
 	});
 
