@@ -277,9 +277,12 @@ function sameMessages(left: AgentMessage[], right: AgentMessage[]): boolean {
  * Re-attach the prompt and tool state after a `context` handler. Handlers only see the
  * conversation; the system messages belong to Pi. An unchanged conversation keeps every
  * system message in place, so models with mid-conversation support keep their cached
- * prefix. Appending to that conversation preserves the same checkpoints. Other changes
- * replay the prompt and tool declarations into a leading system message, so pruning
- * cannot drop them.
+ * prefix, and so does a handler that only adds to or removes from that conversation.
+ *
+ * The checkpoints travel with the conversation instead of being replayed into a fresh head,
+ * because a provider reads the prompt and the initial tool declarations from the leading
+ * system message. Re-folding re-declares every live tool as that initial set, which drops
+ * the request off the anchored tool path and re-bills everything after the head.
  */
 function restoreSystemMessages(
 	current: AgentMessage[],
@@ -290,8 +293,49 @@ function restoreSystemMessages(
 	if (returned.length > visible.length && visible.every((message, index) => message === returned[index])) {
 		return [...current, ...returned.slice(visible.length)];
 	}
+	const spliced = spliceSystemMessages(current, returned);
+	if (spliced) return spliced;
 	const head = getCurrentSystemMessage(current);
 	return head ? [head, ...returned] : returned;
+}
+
+/**
+ * Move the recorded system checkpoints onto a conversation a handler rewrote, keeping the
+ * leading head byte-identical. Returns undefined when only a fold can express the result,
+ * which is a handler that reordered the conversation or added a system message of its own.
+ */
+function spliceSystemMessages(current: AgentMessage[], returned: AgentMessage[]): AgentMessage[] | undefined {
+	const head = current[0];
+	if (head?.role !== "system") return undefined;
+	const position = new Map<AgentMessage, number>();
+	for (let at = 1; at < current.length; at++) {
+		const message = current[at];
+		if (message !== undefined) position.set(message, at);
+	}
+	const spliced: AgentMessage[] = [head];
+	let cursor = 1;
+	for (const message of returned) {
+		const index = position.get(message);
+		if (index === undefined) {
+			// A handler's own item. Only Pi may put a system message at index 0.
+			if (message.role === "system") return undefined;
+			spliced.push(message);
+			continue;
+		}
+		if (index < cursor) return undefined;
+		for (let at = cursor; at < index; at++) {
+			const checkpoint = current[at];
+			if (checkpoint?.role === "system") spliced.push(checkpoint);
+		}
+		spliced.push(message);
+		cursor = index + 1;
+	}
+	// Checkpoints recorded after the handler's last item still declare their tools.
+	for (let at = cursor; at < current.length; at++) {
+		const checkpoint = current[at];
+		if (checkpoint?.role === "system") spliced.push(checkpoint);
+	}
+	return spliced;
 }
 
 export async function emitProjectTrustEvent(
