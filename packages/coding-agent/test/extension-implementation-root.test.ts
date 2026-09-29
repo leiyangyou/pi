@@ -1,4 +1,13 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +25,10 @@ describe("user package extension implementation root", () => {
 	let candidate: string;
 	let marker: string;
 	beforeEach(() => {
-		cwd = mkdtempSync(join(tmpdir(), "pi-implementation-"));
+		// Canonicalise the temp root: on macOS `tmpdir()` is `/var/folders/...`, whose real path is
+		// `/private/var/...`, and the loader returns canonical `resolvedPath` values. Without this the
+		// expectations below compare two spellings of the same directory.
+		cwd = realpathSync(mkdtempSync(join(tmpdir(), "pi-implementation-")));
 		agentDir = join(cwd, "agent");
 		original = join(cwd, "original");
 		candidate = join(cwd, "candidate");

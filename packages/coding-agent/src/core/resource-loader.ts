@@ -751,12 +751,14 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	/** Load extension paths: files from disk and `builtin:<name>` paths from the built-in extensions. */
-	private async loadExtensionPaths(paths: ExtensionLoadPath[], runtime?: ExtensionRuntime): Promise<LoadExtensionsResult> {
-		const isBuiltinPath = (path: ExtensionLoadPath) => typeof path === "string" && path.startsWith(BUILTIN_PATH_PREFIX);
-		const result = await loadExtensionsCached(
+	private async loadExtensionPaths(
+		paths: ExtensionLoadPath[],
+		runtime?: ExtensionRuntime,
+	): Promise<LoadExtensionsResult> {
+		const isBuiltinPath = (path: ExtensionLoadPath) =>
+			typeof path === "string" && path.startsWith(BUILTIN_PATH_PREFIX);
+		const result = await this.loadExtensions(
 			paths.filter((path) => !isBuiltinPath(path)),
-			this.cwd,
-			this.eventBus,
 			runtime,
 		);
 		for (const path of paths) {
