@@ -57,12 +57,22 @@ export function withoutInitialSystemMessage(messages: Message[]): Message[] {
 /** Resolve the tools available after applying every transcript delta in order. */
 export function getCurrentTools(messages: TranscriptMessages): Tool[] {
 	const tools = new Map<string, Tool>();
+	// Declaration order is part of the provider-visible prefix: a redefinition arrives as a removal
+	// plus an addition, and re-adding at the end would shift every later tool in the request. Keep
+	// each name in the slot it was first declared in.
+	const order: string[] = [];
 	for (const message of messages) {
 		if (!isSystemMessage(message)) continue;
 		for (const tool of message.toolsRemoved ?? []) tools.delete(tool.name);
-		for (const tool of message.toolsAdded ?? []) tools.set(tool.name, tool);
+		for (const tool of message.toolsAdded ?? []) {
+			if (!order.includes(tool.name)) order.push(tool.name);
+			tools.set(tool.name, tool);
+		}
 	}
-	return [...tools.values()];
+	return order.flatMap((name) => {
+		const tool = tools.get(name);
+		return tool ? [tool] : [];
+	});
 }
 
 /**

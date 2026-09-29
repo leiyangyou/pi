@@ -322,6 +322,59 @@ describe("transcript system messages", () => {
 		expect(payload.input.filter((item) => item.role === "developer")).toHaveLength(2);
 	});
 
+	test("keeps the declared list byte identical when a tool leaves and returns unchanged", async () => {
+		const secondTool = tool("second_tool");
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-responses",
+			provider: "openai",
+			compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+		};
+		const before = await capturePayload<{ tools?: Array<{ name: string; description: string }> }>(model, {
+			messages: [{ role: "system", content: "base prompt", toolsAdded: [baseTool, secondTool], timestamp: 0 }],
+		});
+		const after = await capturePayload<{ tools?: Array<{ name: string; description: string }> }>(model, {
+			messages: [
+				{ role: "system", content: "base prompt", toolsAdded: [baseTool, secondTool], timestamp: 0 },
+				{ role: "system", content: "", toolsRemoved: [{ name: "base_tool" }], timestamp: 1 },
+				{ role: "system", content: "", toolsAdded: [baseTool], timestamp: 2 },
+			],
+		});
+
+		expect(after.tools?.map((value) => value.name)).toEqual(["base_tool", "second_tool"]);
+		expect(after.tools).toEqual(before.tools);
+	});
+
+	test("keeps first-declaration order when a tool is redefined", async () => {
+		const secondTool = tool("second_tool");
+		const redefinedBaseTool = { ...baseTool, description: "base_tool v2" };
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-responses",
+			provider: "openai",
+			compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+		};
+		const payload = await capturePayload<{ tools?: Array<{ name: string }> }>(model, {
+			messages: [
+				{ role: "system", content: "base prompt", toolsAdded: [baseTool, secondTool], timestamp: 0 },
+				{ role: "user", content: "before", timestamp: 1 },
+				{
+					role: "system",
+					content: "updated guidance",
+					toolsRemoved: [{ name: "base_tool" }],
+					toolsAdded: [redefinedBaseTool],
+					timestamp: 2,
+				},
+			],
+		});
+
+		expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool", "second_tool"]);
+	});
+
 	test("uses the latest definition after a same-name tool change", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
