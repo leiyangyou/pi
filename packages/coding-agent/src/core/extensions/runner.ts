@@ -297,24 +297,28 @@ function restoreSystemMessages(
 }
 
 /**
- * Move the recorded system checkpoints onto a conversation a handler rewrote, keeping the
- * leading head byte-identical. Returns undefined when only a fold can express the result,
- * which is a handler that reordered the conversation or added a system message of its own.
+ * Move the recorded system checkpoints onto a conversation a handler rewrote, keeping every recorded
+ * item where it was. Returns undefined when only a fold can express the result, which is a handler
+ * that reordered the conversation or added a system message of its own.
+ *
+ * The items Pi recorded are found by identity, so a handler that only added or removed conversation
+ * items keeps its own ordering around them. Requiring the leading item to be Pi's head would be wrong
+ * here: a carrier can register a block ahead of it (`item 0` was pi-context's `<context_window>` user
+ * block in every measured harness run), and bailing on that sent the whole request back through the
+ * fold, which is the shape the cache-prefix harness reproduced on the deployed tree.
  */
 function spliceSystemMessages(current: AgentMessage[], returned: AgentMessage[]): AgentMessage[] | undefined {
-	const head = current[0];
-	if (head?.role !== "system") return undefined;
 	const position = new Map<AgentMessage, number>();
-	for (let at = 1; at < current.length; at++) {
+	for (let at = 0; at < current.length; at++) {
 		const message = current[at];
 		if (message !== undefined) position.set(message, at);
 	}
-	const spliced: AgentMessage[] = [head];
-	let cursor = 1;
+	const spliced: AgentMessage[] = [];
+	let cursor = 0;
 	for (const message of returned) {
 		const index = position.get(message);
 		if (index === undefined) {
-			// A handler's own item. Only Pi may put a system message at index 0.
+			// A handler's own item.
 			if (message.role === "system") return undefined;
 			spliced.push(message);
 			continue;
@@ -331,6 +335,17 @@ function spliceSystemMessages(current: AgentMessage[], returned: AgentMessage[])
 	for (let at = cursor; at < current.length; at++) {
 		const checkpoint = current[at];
 		if (checkpoint?.role === "system") spliced.push(checkpoint);
+	}
+	// Pi's prompt head stays at index 0 when the transcript had it there, because a provider reads the
+	// prompt and the initial tool declarations from the first item. A carrier that registered its own
+	// block ahead of the head keeps that order instead, which is the case this splice exists for.
+	const head = current[0];
+	if (head?.role === "system") {
+		const at = spliced.indexOf(head);
+		if (at > 0) {
+			spliced.splice(at, 1);
+			spliced.unshift(head);
+		}
 	}
 	return spliced;
 }
