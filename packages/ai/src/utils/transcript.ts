@@ -203,26 +203,12 @@ export function hasToolRedefinitions(messages: TranscriptMessages): boolean {
 	return false;
 }
 
-/** Whether tool history contains a removal or same-name redeclaration that an addition-only transport cannot replay. */
-export function hasNonAdditiveToolChanges(messages: TranscriptMessages): boolean {
-	const declared = new Set<string>();
-	for (const message of messages) {
-		if (!isSystemMessage(message)) continue;
-		if ((message.toolsRemoved?.length ?? 0) > 0) return true;
-		for (const tool of message.toolsAdded ?? []) {
-			if (declared.has(tool.name)) return true;
-			declared.add(tool.name);
-		}
-	}
-	return false;
-}
-
 export interface TranscriptTools {
 	/** Tools sent in the top-level request field. */
 	requestTools: Tool[];
 	/**
 	 * Whether later system messages carry their own `toolsAdded` as in-place additions.
-	 * When false, `requestTools` already holds the complete current tool set.
+	 * When false, a redeclaration forced `requestTools` to the complete current tool set.
 	 */
 	anchorsAdditions: boolean;
 }
@@ -230,11 +216,15 @@ export interface TranscriptTools {
 /**
  * Split tool declarations between the top-level request field and in-place additions.
  * Transports that can anchor additions at a system message keep the initial tools at the
- * top and load later ones where they appear; that only works when no tool was removed or
- * redeclared, so everything else sends the current tool list.
+ * top and load later ones where they appear. Only a *redeclaration* forces the flat field to
+ * the current tool list, because a name returning with a different interface must replace the
+ * schema. A removal does not: the removed tool keeps its slot, the `tools` section patch tells
+ * the model it is gone, and a call to it is refused rather than executed because the loadout no
+ * longer holds it (`packages/agent/src/agent-loop.ts:710-716`). Keeping the flat field stable
+ * across a removal is what preserves the provider's cached prefix.
  */
 export function resolveTranscriptTools(messages: TranscriptMessages, supportsToolAdditions: boolean): TranscriptTools {
-	const anchorsAdditions = supportsToolAdditions && !hasNonAdditiveToolChanges(messages);
+	const anchorsAdditions = supportsToolAdditions && !hasToolRedefinitions(messages);
 	return {
 		requestTools: anchorsAdditions
 			? (getInitialSystemMessage(messages)?.toolsAdded ?? [])

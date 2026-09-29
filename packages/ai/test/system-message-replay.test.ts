@@ -8,7 +8,6 @@ import {
 	getCurrentSystemMessage,
 	getCurrentSystemPrompt,
 	getToolStateChanges,
-	hasNonAdditiveToolChanges,
 	hasToolRedefinitions,
 	normalizeContext,
 } from "../src/utils/transcript.ts";
@@ -123,8 +122,10 @@ describe("system message replay", () => {
 		expect(getToolStateChanges([tool("a")], [tool("a")])).toEqual({ toolsAdded: [], toolsRemoved: [] });
 	});
 
-	test("detects non-additive tool history and redefinitions", () => {
-		expect(hasNonAdditiveToolChanges(transcript.messages)).toBe(true);
+	// Only a redeclaration forces the flat tool field to the current list. The `transcript` fixture
+	// above removes `first` and adds `second`, which is additive: the removal keeps its slot and the
+	// `tools` section patch tells the model, so the flat field, and the cached prefix, stay put.
+	test("detects redeclarations and leaves removals additive", () => {
 		expect(hasToolRedefinitions(transcript.messages)).toBe(false);
 		const additive = normalizeContext({
 			messages: [
@@ -132,14 +133,21 @@ describe("system message replay", () => {
 				{ role: "system", content: "", toolsAdded: [tool("b")], timestamp: 2 },
 			],
 		});
-		expect(hasNonAdditiveToolChanges(additive.messages)).toBe(false);
+		expect(hasToolRedefinitions(additive.messages)).toBe(false);
+		const returned = normalizeContext({
+			messages: [
+				{ role: "system", content: "", toolsAdded: [tool("a")], timestamp: 1 },
+				{ role: "system", content: "", toolsRemoved: [{ name: "a" }], timestamp: 2 },
+				{ role: "system", content: "", toolsAdded: [tool("a")], timestamp: 3 },
+			],
+		});
+		expect(hasToolRedefinitions(returned.messages)).toBe(false);
 		const redeclared = normalizeContext({
 			messages: [
 				{ role: "system", content: "", toolsAdded: [tool("a")], timestamp: 1 },
 				{ role: "system", content: "", toolsAdded: [tool("a", "changed")], timestamp: 2 },
 			],
 		});
-		expect(hasNonAdditiveToolChanges(redeclared.messages)).toBe(true);
 		expect(hasToolRedefinitions(redeclared.messages)).toBe(true);
 	});
 });

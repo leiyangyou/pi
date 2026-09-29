@@ -303,7 +303,11 @@ describe("transcript system messages", () => {
 		expect(payload.input[0]?.content).toBe("base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>");
 	});
 
-	test("falls back to the complete current tool state when removals are unsupported", async () => {
+	// A removal is additive-safe: the removed tool keeps its slot in the flat field, which leaves it
+	// declared, and the checkpoint's `tools` section patch is what tells the model it is gone. A call to
+	// it is refused rather than executed, because the loadout no longer holds it. Only a redeclaration,
+	// a name returning with a different interface, still replaces the flat field.
+	test("keeps the flat tool field anchored when the change is a removal", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "gpt-5.4",
@@ -314,12 +318,52 @@ describe("transcript system messages", () => {
 		};
 		const payload = await capturePayload<{
 			tools?: Array<{ name: string }>;
-			input: Array<{ type?: string; role?: string }>;
+			input: Array<{ type?: string; role?: string; tools?: Array<{ name: string }> }>;
 		}>(model, context);
 
-		expect(payload.tools?.map((value) => value.name)).toEqual(["late_tool"]);
-		expect(payload.input.some((item) => item.type === "additional_tools")).toBe(false);
-		expect(payload.input.filter((item) => item.role === "developer")).toHaveLength(2);
+		// The initial declaration, unchanged, with the removed tool still in it.
+		expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
+		// The later addition still rides its own in-place additions item.
+		expect(payload.input.find((item) => item.type === "additional_tools")?.tools?.map((tool) => tool.name)).toEqual([
+			"late_tool",
+		]);
+		// One developer item per in-place update: the folded guidance, the additions item, and the
+		// removal's section patch.
+		expect(payload.input.map((item) => item.type ?? item.role)).toEqual([
+			"developer",
+			"user",
+			"additional_tools",
+			"developer",
+		]);
+	});
+
+	test("replaces the flat tool field when a name returns with a different interface", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-responses",
+			provider: "openai",
+			compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+		};
+		const redefined = { ...baseTool, description: "a different interface" };
+		const payload = await capturePayload<{ tools?: Array<{ name: string; description: string }> }>(model, {
+			messages: [
+				{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
+				{ role: "user", content: "before", timestamp: 1 },
+				{
+					role: "system",
+					content: "",
+					toolsRemoved: [{ name: baseTool.name }],
+					toolsAdded: [redefined],
+					timestamp: 2,
+				},
+			],
+		});
+
+		// A stale schema must not stay active, so the flat field carries the new interface.
+		expect(payload.tools?.map((value) => value.name)).toEqual([baseTool.name]);
+		expect(payload.tools?.[0]?.description).toBe("a different interface");
 	});
 
 	test("keeps the declared list byte identical when a tool leaves and returns unchanged", async () => {
