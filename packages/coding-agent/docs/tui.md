@@ -17,6 +17,12 @@ Start with `ctx.ui` methods from an [extension](extensions.md#interact-with-the-
 
 These APIs receive Pi’s active theme and keybindings where needed. Do not create a second terminal renderer inside an extension.
 
+Widget keys keep their position: re-setting the same key replaces that widget's content in place, so an
+extension that refreshes its widget on a timer never reorders the status area. New keys — and keys
+re-created after being cleared — append to the end of their container, so a later registration can take
+that bottom slot in turn. Changing `placement` moves a widget to the end of the other container, and
+re-setting without it defaults back to `aboveEditor`.
+
 ## Understand the component model
 
 A component renders an array of terminal lines for an available width. It can optionally handle keyboard and mouse input, and it must invalidate cached output when its state or theme-dependent content changes.
