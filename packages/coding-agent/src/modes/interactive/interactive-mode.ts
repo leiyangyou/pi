@@ -2309,17 +2309,39 @@ export class InteractiveMode {
 		options?: ExtensionWidgetOptions,
 	): void {
 		const placement = options?.placement ?? "aboveEditor";
-		const removeExisting = (map: Map<string, Component & { dispose?(): void }>) => {
-			const existing = map.get(key);
-			if (existing?.dispose) existing.dispose();
-			map.delete(key);
-		};
-
-		removeExisting(this.extensionWidgetsAbove);
-		removeExisting(this.extensionWidgetsBelow);
+		// A widget keeps the position it first took in its container: only a clear (or a placement
+		// move) changes a key's slot, so an extension that re-sets its widget on a timer cannot
+		// reorder the status area. (Map.set keeps an existing key where it is; a Map.delete followed
+		// by a set would re-append it at the end.)
+		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
+		const otherMap = targetMap === this.extensionWidgetsAbove ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
+		// Disposal is extension-owned code and can throw. A throwing dispose() must not leave a half-updated
+		// widget map (the new component built but never installed, the old one still registered), so the
+		// update runs to completion and the first dispose error is rethrown afterwards.
+		// Wrapped in an object so that a dispose() throwing `undefined` is still recorded as a failure.
+		let disposeFailure: { error: unknown } | undefined;
 
 		if (content === undefined) {
+			const cleared = targetMap.get(key);
+			targetMap.delete(key);
+			const clearedOther = otherMap.get(key);
+			otherMap.delete(key);
+			if (cleared?.dispose) {
+				try {
+					cleared.dispose();
+				} catch (error) {
+					disposeFailure ??= { error };
+				}
+			}
+			if (clearedOther?.dispose) {
+				try {
+					clearedOther.dispose();
+				} catch (error) {
+					disposeFailure ??= { error };
+				}
+			}
 			this.renderWidgets();
+			if (disposeFailure) throw disposeFailure.error;
 			return;
 		}
 
@@ -2336,13 +2358,34 @@ export class InteractiveMode {
 			}
 			component = container;
 		} else {
-			// Factory function - create component
+			// Factory function - create component. It runs before anything is disposed or removed: a factory
+			// that throws leaves the previous widget in place, and one that clears this key re-entrantly
+			// disposes the old component itself instead of having this call dispose it a second time.
 			component = content(this.ui, theme);
 		}
 
-		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
+		const existing = targetMap.get(key);
+		const other = otherMap.get(key);
+		otherMap.delete(key);
+		// Only dispose an outgoing entry that is not the instance being installed: a factory may have just
+		// registered (and returned) that very component, and disposing it would install a dead widget.
+		if (existing !== component && existing?.dispose) {
+			try {
+				existing.dispose();
+			} catch (error) {
+				disposeFailure ??= { error };
+			}
+		}
+		if (other !== component && other?.dispose) {
+			try {
+				other.dispose();
+			} catch (error) {
+				disposeFailure ??= { error };
+			}
+		}
 		targetMap.set(key, component);
 		this.renderWidgets();
+		if (disposeFailure) throw disposeFailure.error;
 	}
 
 	private clearExtensionWidgets(): void {
