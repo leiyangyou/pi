@@ -5,6 +5,7 @@ import {
 	resolveTranscriptTools,
 	type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { fauxToolCall } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import type { InlineExtension } from "../../../src/index.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -61,6 +62,12 @@ const isAuditEntry = (message: unknown): boolean =>
 
 function countAuditEntries(messages: readonly unknown[]): number {
 	return messages.filter(isAuditEntry).length;
+}
+
+/** The runtime transcript carries the head's `sections`; the `Message` type does not model them. */
+function headToolsSection(messages: readonly unknown[] | undefined): string | undefined {
+	const head = messages?.[0] as { sections?: Record<string, string> } | undefined;
+	return head?.sections?.tools;
 }
 
 const dropAuditEntries: InlineExtension = (pi) => {
@@ -135,5 +142,115 @@ describe("head stability across a snippet-bearing tool activation", () => {
 		harnesses.push(harness);
 		expect(current?.[0]?.role).toBe("system");
 		expect(JSON.stringify(current?.[0])).toBe(JSON.stringify(previous?.[0]));
+	});
+});
+
+/**
+ * The shape of the live trigger: a `before_agent_start` handler activates a snippet-bearing tool
+ * before the request is built, as `create_goal` does. The head stays put, so this is a guard, not a
+ * reproduction of the live miss.
+ */
+async function runHandlerActivationTurn(activate: (pi: { setActiveTools(names: string[]): void }) => void) {
+	const harness = await createHarness({
+		initialActiveToolNames: ["read"],
+		extensionFactories: [
+			(pi) => {
+				let turn = 0;
+				pi.on("before_agent_start", () => {
+					if (++turn === 2) activate(pi);
+				});
+			},
+		],
+	});
+	const captured: TranscriptContext[] = [];
+	respondAndCapture(harness, "first answer", captured);
+	await harness.session.prompt("first");
+	respondAndCapture(harness, "second answer", captured);
+	await harness.session.prompt("second");
+	return { harness, previous: captured[0]?.messages, current: captured[1]?.messages };
+}
+
+describe("head stability when a handler activates a tool at a turn boundary", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	it("activates the tool", async () => {
+		const { harness } = await runHandlerActivationTurn((pi) => pi.setActiveTools(["read", "bash"]));
+		harnesses.push(harness);
+		expect(harness.session.getActiveToolNames()).toEqual(["read", "bash"]);
+	});
+
+	// A pure addition is not a head change. The session keeps the index it rendered for the run and
+	// declares the addition in a checkpoint, which is what lets `resolveTranscriptTools` anchor it.
+	it("leaves the rendered tool index alone when the activation is an addition", async () => {
+		const { harness, previous, current } = await runHandlerActivationTurn((pi) =>
+			pi.setActiveTools(["read", "bash"]),
+		);
+		harnesses.push(harness);
+		expect(headToolsSection(current)).toBe(headToolsSection(previous));
+		expect(headToolsSection(current)).toContain("- read:");
+	});
+
+	it("keeps the previous request as a prefix of the next one", async () => {
+		const { harness, previous, current } = await runHandlerActivationTurn((pi) =>
+			pi.setActiveTools(["read", "bash"]),
+		);
+		harnesses.push(harness);
+		expect(firstDivergence(previous ?? [], current ?? [])).toBeUndefined();
+	});
+});
+
+/**
+ * The live trigger's other shape: the activation happens inside the agent run, after the first
+ * provider request, as `create_goal` and an MCP connect both do. The head stays put here too.
+ */
+async function runInsideRunActivation() {
+	const harness = await createHarness({
+		initialActiveToolNames: ["read"],
+		extensionFactories: [
+			(pi) => {
+				pi.on("tool_execution_end", () => {
+					pi.setActiveTools(["read", "bash"]);
+				});
+			},
+		],
+	});
+	const captured: TranscriptContext[] = [];
+	harness.setResponses([
+		(context) => {
+			captured.push(context);
+			return fauxAssistantMessage([fauxToolCall("read", { path: "missing.txt" })]);
+		},
+		(context) => {
+			captured.push(context);
+			return fauxAssistantMessage("second answer");
+		},
+	]);
+	await harness.session.prompt("go");
+	return { harness, previous: captured[0]?.messages, current: captured[1]?.messages };
+}
+
+describe("head stability when a tool is activated inside one agent run", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	it("activates the tool between the run's two requests", async () => {
+		const { harness, previous, current } = await runInsideRunActivation();
+		harnesses.push(harness);
+		expect(previous).toBeDefined();
+		expect(current).toBeDefined();
+		expect(harness.session.getActiveToolNames()).toEqual(["read", "bash"]);
+	});
+
+	it("keeps the previous request as a prefix of the next one", async () => {
+		const { harness, previous, current } = await runInsideRunActivation();
+		harnesses.push(harness);
+		expect(firstDivergence(previous ?? [], current ?? [])).toBeUndefined();
 	});
 });
