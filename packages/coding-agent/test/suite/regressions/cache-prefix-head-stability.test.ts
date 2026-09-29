@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	fauxAssistantMessage,
+	getCurrentSystemPrompt,
 	getInitialSystemMessage,
 	resolveTranscriptTools,
 	type TranscriptContext,
@@ -280,5 +281,48 @@ describe("head stability when a tool is activated inside one agent run", () => {
 		const { harness, previous, current } = await runInsideRunActivation();
 		harnesses.push(harness);
 		expect(firstDivergence(previous ?? [], current ?? [])).toBeUndefined();
+	});
+});
+
+/**
+ * A section-only change, which is what a ponytail mode switch and a subagent advertisement change
+ * both are. The section patch is conceptually an append: `getCurrentSystemMessage` merges `sections`
+ * in order, so a later message wins wherever it sits.
+ */
+describe("head stability across a section-only change", () => {
+	const harnesses: Harness[] = [];
+
+	afterEach(() => {
+		while (harnesses.length > 0) harnesses.pop()?.cleanup();
+	});
+
+	it("reports what a section change does to the leading item", async () => {
+		let turn = 0;
+		const harness = await createHarness({
+			initialActiveToolNames: ["read"],
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", (event) => {
+						if (++turn !== 2) return;
+						const options = event.systemPromptOptions as { sections?: Record<string, string> };
+						if (options.sections) options.sections.plan_mode = "Plan only.";
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const captured: TranscriptContext[] = [];
+		respondAndCapture(harness, "first answer", captured);
+		await harness.session.prompt("first");
+		respondAndCapture(harness, "second answer", captured);
+		await harness.session.prompt("second");
+
+		const previous = captured[0]?.messages ?? [];
+		const current = captured[1]?.messages ?? [];
+		expect(current[0]?.role).toBe("system");
+		expect(getCurrentSystemPrompt(current)).toContain("Plan only.");
+		// Mechanism (b): `normalizeContext` prepends a head built from the live `context.systemPrompt`,
+		// so a section change would rewrite item 0. If this holds, the change is an append instead.
+		expect(JSON.stringify(current[0])).toBe(JSON.stringify(previous[0]));
 	});
 });
