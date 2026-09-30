@@ -183,8 +183,16 @@ export function convertResponsesMessages<TApi extends Api>(
 		(options?.supportsAdditionalTools ?? false) || (options?.supportsToolSearch ?? false),
 	);
 	let hasToolSearchPairs = false;
+	// A name the flat field already declares must not be repeated as an item, or the request declares it
+	// twice and a strict endpoint rejects it with "Tool names must be unique". On this path the flat field
+	// is the initial tools, so a tool that leaves and returns unchanged is already there.
+	// `hasToolRedefinitions` does not catch that: it only reports a name returning with a *different*
+	// definition, which is the case a name-referencing transport cannot express.
+	const declaredInFlatField = new Set(transcriptTools.requestTools.map((tool) => tool.name));
 	const appendSystemToolAdditions = (message: SystemMessage, seed: string): void => {
-		const tools = transcriptTools.anchorsAdditions ? (message.toolsAdded ?? []) : [];
+		const tools = transcriptTools.anchorsAdditions
+			? (message.toolsAdded ?? []).filter((tool) => !declaredInFlatField.has(tool.name))
+			: [];
 		if (tools.length === 0) return;
 		if (options?.supportsAdditionalTools) {
 			messages.push({
