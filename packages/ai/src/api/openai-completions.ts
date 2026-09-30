@@ -1238,6 +1238,7 @@ export function convertMessages(
 			? "additions"
 			: "none",
 	);
+	const declaredInFlatField = new Set(transcriptTools.requestTools.map((tool) => tool.name));
 	const instructionRole = model.reasoning && compat.supportsDeveloperRole ? "developer" : "system";
 
 	let lastRole: string | null = null;
@@ -1256,7 +1257,11 @@ export function convertMessages(
 
 		if (msg.role === "system") {
 			// transformMessages keeps system messages in order, so their position matches the transcript.
-			const addedTools = systemIndex++ >= transcriptTools.foldedSystemMessages ? (msg.toolsAdded ?? []) : [];
+			// Never repeat a name the flat field already declares: a strict endpoint rejects the duplicate.
+			const addedTools =
+				systemIndex++ >= transcriptTools.foldedSystemMessages
+					? (msg.toolsAdded ?? []).filter((tool) => !declaredInFlatField.has(tool.name))
+					: [];
 			if (addedTools.length > 0) {
 				const kimiToolMessage: KimiToolSystemMessageParam = {
 					role: "system",
