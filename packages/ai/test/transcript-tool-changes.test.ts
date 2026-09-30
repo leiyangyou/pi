@@ -521,3 +521,48 @@ describe("transcript system messages", () => {
 		expect(payload.messages[0]?.content).toBe("base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>");
 	});
 });
+
+// A tool that leaves the transcript and returns unchanged is still in the flat field: the anchored path
+// keeps the initial tools there and keeps a removed name in its slot. Re-declaring it as an addition made
+// the request declare one name twice, which a strict endpoint rejects with "Tool names must be unique".
+// The walk is key-agnostic because the items land under `input` on some transports and `messages` on others.
+test("never declares one tool name twice across the flat field and the additions", async () => {
+	const responses: Model<"openai-responses"> = {
+		...modelBase,
+		id: "gpt-5.4",
+		name: "GPT-5.4",
+		api: "openai-responses",
+		provider: "openai",
+		compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+	};
+
+	const payload = await capturePayload<unknown>(responses, {
+		messages: [
+			{ role: "system", content: "base prompt", toolsAdded: [tool("base_tool"), tool("second_tool")], timestamp: 0 },
+			{ role: "system", content: "", toolsRemoved: [{ name: "base_tool" }], timestamp: 1 },
+			{ role: "system", content: "", toolsAdded: [tool("base_tool")], timestamp: 2 },
+		],
+	});
+
+	const counts = new Map<string, number>();
+	const visit = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const entry of node) visit(entry);
+			return;
+		}
+		if (!node || typeof node !== "object") return;
+		const record = node as Record<string, unknown>;
+		if (Array.isArray(record.tools)) {
+			for (const entry of record.tools) {
+				const name = (entry as { name?: unknown }).name;
+				if (typeof name === "string") counts.set(name, (counts.get(name) ?? 0) + 1);
+			}
+		}
+		for (const value of Object.values(record)) visit(value);
+	};
+	visit(payload);
+
+	expect([...counts].filter(([, count]) => count > 1)).toEqual([]);
+	expect(counts.get("base_tool")).toBe(1);
+	expect(counts.get("second_tool")).toBe(1);
+});
