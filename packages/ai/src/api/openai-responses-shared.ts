@@ -188,12 +188,18 @@ export function convertResponsesMessages<TApi extends Api>(
 	// is the initial tools, so a tool that leaves and returns unchanged is already there.
 	// `hasToolRedefinitions` does not catch that: it only reports a name returning with a *different*
 	// definition, which is the case a name-referencing transport cannot express.
-	const declaredInFlatField = new Set(transcriptTools.requestTools.map((tool) => tool.name));
+	const declaredInRequest = new Set(transcriptTools.requestTools.map((tool) => tool.name));
 	const appendSystemToolAdditions = (message: SystemMessage, seed: string): void => {
+		// What the request has declared so far: the flat field to begin with, then each item as it is emitted,
+		// which is monotone on purpose. The flat field keeps a removed name in its slot, and an item already
+		// sent stays in the request, so a name that leaves and returns is still declared and must not go out
+		// again. Emitting any name twice makes the request declare it twice, and a strict endpoint rejects
+		// that with "Tool names must be unique" - a goal transition re-adding a later-added tool is how it bit.
 		const tools = transcriptTools.anchorsAdditions
-			? (message.toolsAdded ?? []).filter((tool) => !declaredInFlatField.has(tool.name))
+			? (message.toolsAdded ?? []).filter((tool) => !declaredInRequest.has(tool.name))
 			: [];
 		if (tools.length === 0) return;
+		for (const tool of tools) declaredInRequest.add(tool.name);
 		if (options?.supportsAdditionalTools) {
 			messages.push({
 				type: "additional_tools",
