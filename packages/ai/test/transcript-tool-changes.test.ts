@@ -566,3 +566,47 @@ test("never declares one tool name twice across the flat field and the additions
 	expect(counts.get("base_tool")).toBe(1);
 	expect(counts.get("second_tool")).toBe(1);
 });
+
+// The shape that actually reached a provider: a later-added tool added again in a *later* message with no
+// removal in between, as a goal transition does (update_goal added twice, removed zero times). Filtering
+// only against the flat field does not catch it, because neither copy is in the initial tools.
+test("never declares a tool twice when it is added again in a later message", async () => {
+	const responses: Model<"openai-responses"> = {
+		...modelBase,
+		id: "gpt-5.4",
+		name: "GPT-5.4",
+		api: "openai-responses",
+		provider: "openai",
+		compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+	};
+
+	const payload = await capturePayload<unknown>(responses, {
+		messages: [
+			{ role: "system", content: "base prompt", toolsAdded: [tool("base_tool")], timestamp: 0 },
+			{ role: "system", content: "goal created", toolsAdded: [tool("create_goal"), tool("update_goal")], timestamp: 1 },
+			{ role: "system", content: "goal advanced", toolsAdded: [tool("update_goal")], timestamp: 2 },
+		],
+	});
+
+	const counts = new Map<string, number>();
+	const visit = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const entry of node) visit(entry);
+			return;
+		}
+		if (!node || typeof node !== "object") return;
+		const record = node as Record<string, unknown>;
+		if (Array.isArray(record.tools)) {
+			for (const entry of record.tools) {
+				const name = (entry as { name?: unknown }).name;
+				if (typeof name === "string") counts.set(name, (counts.get(name) ?? 0) + 1);
+			}
+		}
+		for (const value of Object.values(record)) visit(value);
+	};
+	visit(payload);
+
+	expect([...counts].filter(([, count]) => count > 1)).toEqual([]);
+	expect(counts.get("update_goal")).toBe(1);
+	expect(counts.get("create_goal")).toBe(1);
+});

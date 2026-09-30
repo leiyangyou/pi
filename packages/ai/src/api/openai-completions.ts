@@ -1222,7 +1222,7 @@ export function convertMessages(
 		normalizedContext.messages,
 		compat.supportsMidConvoSystemMessages === true && compat.supportsMidConvoToolAdditions === true,
 	);
-	const declaredInFlatField = new Set(transcriptTools.requestTools.map((tool) => tool.name));
+	const declaredInRequest = new Set(transcriptTools.requestTools.map((tool) => tool.name));
 	const instructionRole = model.reasoning && compat.supportsDeveloperRole ? "developer" : "system";
 
 	let lastRole: string | null = null;
@@ -1239,11 +1239,13 @@ export function convertMessages(
 		}
 
 		if (msg.role === "system") {
-			// Same rule as the Responses path: never repeat a name the flat field already declares.
+			// Same rule as the Responses path: what the request has declared, tracked monotone, so a name the
+			// flat field holds or an item already sent is never emitted a second time.
 			const addedTools =
 				i > 0 && transcriptTools.anchorsAdditions
-					? (msg.toolsAdded ?? []).filter((tool) => !declaredInFlatField.has(tool.name))
+					? (msg.toolsAdded ?? []).filter((tool) => !declaredInRequest.has(tool.name))
 					: [];
+			for (const tool of addedTools) declaredInRequest.add(tool.name);
 			if (addedTools.length > 0) {
 				const kimiToolMessage: KimiToolSystemMessageParam = {
 					role: "system",
