@@ -2358,7 +2358,8 @@ export class InteractiveMode {
 		// reorder the status area. (Map.set keeps an existing key where it is; a Map.delete followed
 		// by a set would re-append it at the end.)
 		const targetMap = placement === "belowEditor" ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
-		const otherMap = targetMap === this.extensionWidgetsAbove ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
+		const otherMap =
+			targetMap === this.extensionWidgetsAbove ? this.extensionWidgetsBelow : this.extensionWidgetsAbove;
 		// Disposal is extension-owned code and can throw. A throwing dispose() must not leave a half-updated
 		// widget map (the new component built but never installed, the old one still registered), so the
 		// update runs to completion and the first dispose error is rethrown afterwards.

@@ -583,7 +583,12 @@ test("never declares a tool twice when it is added again in a later message", as
 	const payload = await capturePayload<unknown>(responses, {
 		messages: [
 			{ role: "system", content: "base prompt", toolsAdded: [tool("base_tool")], timestamp: 0 },
-			{ role: "system", content: "goal created", toolsAdded: [tool("create_goal"), tool("update_goal")], timestamp: 1 },
+			{
+				role: "system",
+				content: "goal created",
+				toolsAdded: [tool("create_goal"), tool("update_goal")],
+				timestamp: 1,
+			},
 			{ role: "system", content: "goal advanced", toolsAdded: [tool("update_goal")], timestamp: 2 },
 		],
 	});
