@@ -1,9 +1,34 @@
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ProcessImageResult } from "../../src/utils/image-process.ts";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
+
+const processImage = vi.hoisted(() =>
+	vi.fn(
+		async (_bytes: Uint8Array, mimeType: string): Promise<ProcessImageResult> => ({
+			ok: true,
+			data: Buffer.from("normalized").toString("base64"),
+			mimeType,
+			hints: [],
+		}),
+	),
+);
+vi.mock("../../src/utils/image-process.ts", () => ({ processImage }));
+
+const DIMENSION_HINT =
+	"[Image: original 2156x74, displayed at 2000x69. Multiply coordinates by 1.08 to map to original image.]";
+const OVERSIZED_IMAGE = { type: "image" as const, mimeType: "image/png", data: Buffer.from("raw").toString("base64") };
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	let resolve = () => {};
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
 
 async function createWaitingHarness(
 	options: {
@@ -61,6 +86,7 @@ describe("AgentSession queue characterization", () => {
 	const harnesses: Harness[] = [];
 
 	afterEach(() => {
+		processImage.mockClear();
 		while (harnesses.length > 0) {
 			harnesses.pop()?.cleanup();
 		}
@@ -471,6 +497,320 @@ describe("AgentSession queue characterization", () => {
 		await expect(harness.session.followUp("/testcmd queued")).rejects.toThrow(
 			'Extension command "/testcmd" cannot be queued. Use prompt() or execute the command when not streaming.',
 		);
+	});
+
+	// A queued image used to reach the provider untouched: prompt() returns into the queue before the
+	// idle path normalizes, and steer()/followUp() never normalized at all, so auto-resize was skipped
+	// for every image pasted into a running turn.
+	it.each(["steer", "followUp"] as const)("normalizes images queued with %s() while streaming", async (behavior) => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		processImage.mockResolvedValueOnce({
+			ok: true,
+			data: Buffer.from("normalized").toString("base64"),
+			mimeType: "image/png",
+			hints: [DIMENSION_HINT],
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		await (behavior === "steer"
+			? harness.session.steer("queued with image", [OVERSIZED_IMAGE])
+			: harness.session.followUp("queued with image", [OVERSIZED_IMAGE]));
+		releaseToolExecution();
+		await promptPromise;
+
+		const queued = harness.session.messages.find(
+			(message): message is Extract<AgentMessage, { role: "user" }> =>
+				message.role === "user" && getMessageText(message).startsWith("queued with image"),
+		);
+		expect(processImage).toHaveBeenCalledWith(
+			expect.any(Uint8Array),
+			"image/png",
+			expect.objectContaining({ autoResizeImages: true }),
+		);
+		expect(queued?.content).toContainEqual({
+			type: "image",
+			data: Buffer.from("normalized").toString("base64"),
+			mimeType: "image/png",
+		});
+		expect(getMessageText(queued)).toBe(`queued with image\n\n${DIMENSION_HINT}`);
+	});
+
+	// The three ways a submission can reach the queue while a run is active.
+	const SUBMISSIONS: Array<[string, (harness: Harness) => Promise<unknown>]> = [
+		["steer()", (harness) => harness.session.steer("queued with image", [OVERSIZED_IMAGE])],
+		["followUp()", (harness) => harness.session.followUp("queued with image", [OVERSIZED_IMAGE])],
+		[
+			"prompt({streamingBehavior})",
+			(harness) =>
+				harness.session.prompt("queued with image", {
+					images: [OVERSIZED_IMAGE],
+					streamingBehavior: "steer",
+				}),
+		],
+	];
+
+	/** Hold the next `processImage` call open, and return the function that lets it finish. */
+	function deferResize(): () => void {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		processImage.mockImplementationOnce(async (_bytes, mimeType) => {
+			await gate;
+			return {
+				ok: true,
+				data: Buffer.from("normalized").toString("base64"),
+				mimeType,
+				hints: [DIMENSION_HINT],
+			};
+		});
+		return () => release();
+	}
+
+	// A submission whose image is still being resized belongs to the run that is active when it is
+	// made: the queue is drained by that run, so settling before the message is registered would
+	// strand it until some later run - which may never come.
+	it.each(SUBMISSIONS)("delivers an image submitted with %s inside the running turn", async (_name, submit) => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const releaseResize = deferResize();
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		const submitted = submit(harness);
+		// The resize outlives the tool call that was holding the turn open, so the run reaches its
+		// settle decision while the submission is still being prepared.
+		releaseToolExecution();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(harness.session.isStreaming).toBe(true);
+		releaseResize();
+		await submitted;
+		await promptPromise;
+
+		// Delivered with the hint, drained, and by the run that was already active rather than a
+		// second one started after the fact.
+		expect(getUserTexts(harness)).toContain(`queued with image\n\n${DIMENSION_HINT}`);
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
+	it.each(SUBMISSIONS)(
+		"drops an image submitted with %s when the run is aborted while it resizes",
+		async (_name, submit) => {
+			const waiting = await createWaitingHarness();
+			const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+			harnesses.push(harness);
+			const releaseResize = deferResize();
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("should not run"),
+			]);
+
+			await waitForToolStart;
+			const submitted = submit(harness);
+			const aborting = harness.session.abort();
+			releaseToolExecution();
+			releaseResize();
+			await submitted;
+			await aborting;
+			await promptPromise;
+
+			expect(getUserTexts(harness).some((text) => text.includes("queued with image"))).toBe(false);
+			expect(harness.session.pendingMessageCount).toBe(0);
+			expect(getAssistantTexts(harness)).not.toContain("should not run");
+		},
+	);
+
+	// Escape must not wait for the image: abort() waits for this session to go idle, so a settlement
+	// wait that blocks on a resize would make the abort hang for as long as the resize takes.
+	it("does not make abort wait for an in-flight resize", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const releaseResize = deferResize();
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		const submitted = harness.session.steer("queued with image", [OVERSIZED_IMAGE]);
+		releaseToolExecution();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		const aborting = harness.session.abort();
+		const outcome = await Promise.race([
+			aborting.then(() => "aborted"),
+			new Promise((resolve) => setTimeout(() => resolve("still waiting"), 50)),
+		]);
+		expect(outcome).toBe("aborted");
+
+		releaseResize();
+		await Promise.all([submitted, aborting, promptPromise]);
+	});
+
+	// Clearing the queues cancels in-flight work, so settlement must not keep waiting on it.
+	it("lets a cleared submission stop holding settlement", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const releaseResize = deferResize();
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		const submitted = harness.session.steer("queued with image", [OVERSIZED_IMAGE]);
+		releaseToolExecution();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		harness.session.clearQueue();
+
+		const outcome = await Promise.race([
+			promptPromise.then(() => "settled"),
+			// Generous: with the defect present the run keeps waiting for the resize released below.
+			new Promise((resolve) => setTimeout(() => resolve("held"), 2_000)),
+		]);
+		expect(outcome).toBe("settled");
+
+		releaseResize();
+		await submitted;
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
+	// An aborted submission must not make the next run wait for its resize either.
+	it("does not make a later run wait on an aborted submission", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const releaseResize = deferResize();
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("first"),
+			fauxAssistantMessage("second"),
+			fauxAssistantMessage("third"),
+			fauxAssistantMessage("fourth"),
+		]);
+
+		await waitForToolStart;
+		const submitted = harness.session.steer("queued with image", [OVERSIZED_IMAGE]);
+		const aborting = harness.session.abort();
+		releaseToolExecution();
+		await aborting;
+		await promptPromise.catch(() => {});
+
+		const second = harness.session.prompt("second");
+		const outcome = await Promise.race([
+			second.then(() => "done"),
+			// Generous: with the defect present this run waits for the resize, which is never released here.
+			new Promise((resolve) => setTimeout(() => resolve("waiting"), 2_000)),
+		]);
+		expect(outcome).toBe("done");
+
+		releaseResize();
+		await submitted;
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
+	// The last settlement decision has its own async gap: an extension handler can hold the boundary
+	// open, and a submission made during it belongs to this run just as much as the earlier ones.
+	it("drains a submission made while the settlement boundary is held open", async () => {
+		const boundaryStarted = deferred();
+		const releaseBoundary = deferred();
+		const waiting = await createWaitingHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_before_settle", async () => {
+						boundaryStarted.resolve();
+						await releaseBoundary.promise;
+					});
+				},
+			],
+		});
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const releaseResize = deferResize();
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		releaseToolExecution();
+		await boundaryStarted.promise;
+		const submitted = harness.session.steer("queued with image", [OVERSIZED_IMAGE]);
+		releaseBoundary.resolve();
+		releaseResize();
+		await submitted;
+		await promptPromise;
+
+		expect(getUserTexts(harness).some((text) => text.includes("queued with image"))).toBe(true);
+		expect(harness.session.pendingMessageCount).toBe(0);
+	});
+
+	// RPC answers a prompt request only through preflightResult or a rejection, so a cancelled
+	// submission has to report a disposition or the request is never answered.
+	it("reports a submission cancelled during resizing as handled", async () => {
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		const releaseResize = deferResize();
+		const dispositions: string[] = [];
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		const submitted = harness.session.prompt("queued with image", {
+			images: [OVERSIZED_IMAGE],
+			streamingBehavior: "steer",
+			preflightResult: (disposition) => dispositions.push(disposition),
+		});
+		const aborting = harness.session.abort();
+		releaseToolExecution();
+		releaseResize();
+		await submitted;
+		await aborting;
+		await promptPromise;
+
+		expect(dispositions).toEqual(["handled"]);
+	});
+
+	it("omits an image that cannot be resized and tells the model why", async () => {
+		const OMITTED = "[Image omitted: could not be resized below the inline image size limit.]";
+		const waiting = await createWaitingHarness();
+		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
+		harnesses.push(harness);
+		processImage.mockResolvedValueOnce({ ok: false, message: OMITTED });
+		harness.setResponses([
+			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await waitForToolStart;
+		await harness.session.steer("queued with image", [OVERSIZED_IMAGE]);
+		releaseToolExecution();
+		await promptPromise;
+
+		const queued = harness.session.messages.find(
+			(message): message is Extract<AgentMessage, { role: "user" }> =>
+				message.role === "user" && getMessageText(message).includes("queued with image"),
+		);
+		expect(queued?.content).not.toContainEqual(expect.objectContaining({ type: "image" }));
+		expect(getMessageText(queued)).toBe(`queued with image\n\n${OMITTED}`);
 	});
 
 	it("delivers follow-ups queued during agent_end", async () => {
