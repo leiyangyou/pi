@@ -162,7 +162,6 @@ describe("InteractiveMode.setExtensionWidget keeps a widget's slot", () => {
 		const { fakeThis, extensionWidgetsAbove } = makeMode();
 		const first = disposable("first");
 		first.dispose = vi.fn(() => {
-			// biome-ignore lint/style/useThrowOnlyError: a non-Error, nullish throw is exactly the case under test
 			throw undefined;
 		});
 		const second = disposable("second");
