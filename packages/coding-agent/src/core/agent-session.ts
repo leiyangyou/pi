@@ -378,6 +378,19 @@ export class AgentSession {
 	private _steeringMessages: string[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
 	private _followUpMessages: string[] = [];
+	/**
+	 * Submissions whose images are still being resized, tagged with the cancellation epoch they started
+	 * in. The run may not settle while one is pending: the queue is drained by the run that is active
+	 * now, so a message registered after that run ended waits for a run that may never come.
+	 */
+	private _pendingSubmissions: Array<{ epoch: number; promise: Promise<void> }> = [];
+	/** Bumped when in-flight work is cancelled (abort of an active run, or clearing the queues). */
+	private _cancellationEpoch = 0;
+	/**
+	 * Releases an in-flight settlement wait. Waiting for a resize otherwise blocks the run from going
+	 * idle, and `abort()` waits for idle, so Escape would wait for the image.
+	 */
+	private _releaseSettlementWait: (() => void) | undefined;
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 	/** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
@@ -1804,6 +1817,9 @@ export class AgentSession {
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
+		// A submission whose images are still being resized belongs to this run: wait for it here so its
+		// message lands in this run's queue rather than after the run has already settled.
+		await this._awaitPendingSubmissions();
 		const message = this._lastAssistantMessage;
 		const toolResults = this._lastAssistantToolResults;
 		this._lastAssistantMessage = undefined;
@@ -1844,6 +1860,8 @@ export class AgentSession {
 	}
 
 	private async _runBeforeSettleBoundary(): Promise<boolean> {
+		// A submission accepted since the post-run check belongs to this run too.
+		await this._awaitPendingSubmissions();
 		if (!this._extensionRunner.hasHandlers("agent_before_settle")) return this.agent.hasQueuedMessages();
 		this._isBeforeSettle = true;
 		this._abortDuringBeforeSettle = false;
@@ -1854,6 +1872,8 @@ export class AgentSession {
 			);
 			this._commitBoundaryDrafts(result.entries);
 			this._flushPendingCustomMessages();
+			// A handler can submit through the same path, so settle the decision on the queues it left.
+			await this._awaitPendingSubmissions();
 			const finalContext = this._buildBoundaryContext([], "agent_before_settle");
 			if (this._abortDuringBeforeSettle) return false;
 			const shouldContinue = result.continue || this.agent.hasQueuedMessages();
@@ -1910,6 +1930,73 @@ export class AgentSession {
 	}
 
 	/**
+	 * Normalize prompt images and fold their hints (dimension note, conversion) into the text.
+	 * Every path that turns a user prompt's images into a message goes through here, because an image
+	 * the model receives at a different size than the file is unusable without the coordinate note.
+	 * (Content passed to `sendCustomMessage` is not a prompt and still bypasses this.)
+	 */
+	private async _normalizePromptContent(
+		text: string,
+		images: ImageContent[] | undefined,
+	): Promise<{ text: string; images: ImageContent[] }> {
+		const normalized = await this._normalizePromptImages(images);
+		const withHints = normalized.hints.length > 0 ? `${text}\n\n${normalized.hints.join("\n")}` : text;
+		return { text: withHints, images: normalized.images };
+	}
+
+	/**
+	 * Track a submission while its images are resized, so the active run cannot settle before its
+	 * message is registered. `epoch` is the epoch the submission started in, not the one current at
+	 * registration: a submission cancelled during its input handlers is already stale by then.
+	 */
+	private async _trackSubmission<T>(epoch: number, work: Promise<T>): Promise<T> {
+		const entry = {
+			epoch,
+			promise: work.then(
+				() => {},
+				() => {},
+			),
+		};
+		this._pendingSubmissions.push(entry);
+		try {
+			return await work;
+		} finally {
+			const index = this._pendingSubmissions.indexOf(entry);
+			if (index !== -1) {
+				this._pendingSubmissions.splice(index, 1);
+			}
+		}
+	}
+
+	/**
+	 * Wait for in-flight submissions to register their messages, unless the work is cancelled. Blocking
+	 * on a resize here would keep the run from settling, and `abort()` waits for the run to go idle.
+	 * Cancelled submissions are skipped rather than awaited: a submission that was invalidated during
+	 * its own input handlers registers after the cancellation and is stale from the start.
+	 */
+	private async _awaitPendingSubmissions(): Promise<void> {
+		while (!this._agentRunAbortRequested) {
+			const live = this._pendingSubmissions
+				.filter((submission) => submission.epoch === this._cancellationEpoch)
+				.map((submission) => submission.promise);
+			if (live.length === 0) return;
+			await Promise.race([
+				Promise.all(live),
+				new Promise<void>((resolve) => {
+					this._releaseSettlementWait = resolve;
+				}),
+			]);
+			this._releaseSettlementWait = undefined;
+		}
+	}
+
+	/** Cancel in-flight submissions: they stop counting, and a settlement wait stops blocking on them. */
+	private _cancelPendingWork(): void {
+		this._cancellationEpoch += 1;
+		this._releaseSettlementWait?.();
+	}
+
+	/**
 	 * Send a prompt to the agent.
 	 * - Handles extension commands (registered via pi.registerCommand) immediately, even during streaming
 	 * - Expands file-based prompt templates by default
@@ -1919,6 +2006,9 @@ export class AgentSession {
 	 * @throws Error if no model selected or no API key available (when not streaming)
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
+		// Captured before the first await: a submission cancelled while it is still being prepared
+		// (abort of an active run, or clearing the queues) is dropped instead of delivered.
+		const submissionEpoch = this._cancellationEpoch;
 		if (this._isEmittingAgentSettled) {
 			this._deferredSettledActions.push(async () => await this.prompt(text, options));
 			return;
@@ -1969,13 +2059,27 @@ export class AgentSession {
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
+			// Resize before queueing and keep the run from settling meanwhile, so the message is drained
+			// by the run that is active now. If the run ends anyway (aborted, or settled before this
+			// submission existed), fall through and deliver it as a prompt instead of leaving it queued.
+			const queued = await this._trackSubmission(
+				submissionEpoch,
+				this._normalizePromptContent(expandedText, currentImages),
+			);
+			if (submissionEpoch !== this._cancellationEpoch) {
+				// Cancelled while resizing: consumed, not sent. RPC reports its prompt response from here.
+				preflightResult?.("handled");
+				return;
 			}
-			preflightResult?.("queued");
-			return;
+			if (this.isStreaming) {
+				if (options.streamingBehavior === "followUp") {
+					await this._queueFollowUp(queued.text, queued.images);
+				} else {
+					await this._queueSteer(queued.text, queued.images);
+				}
+				preflightResult?.("queued");
+				return;
+			}
 		}
 
 		// Flush any pending bash and custom messages before the new prompt
@@ -2026,12 +2130,15 @@ export class AgentSession {
 			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
 		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
 
-		const normalized = await this._normalizePromptImages(currentImages);
-		const userText = normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
+		const normalized = await this._normalizePromptContent(expandedText, currentImages);
+		if (submissionEpoch !== this._cancellationEpoch) {
+			preflightResult?.("handled");
+			return;
+		}
 
 		// Build messages only after hooks and image normalization have completed.
 		const messages: AgentMessage[] = [];
-		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
+		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: normalized.text }];
 		userContent.push(...normalized.images);
 		messages.push({
 			role: "user",
@@ -2130,6 +2237,9 @@ export class AgentSession {
 		behavior: "steer" | "followUp",
 		source: InputSource,
 	): Promise<QueuedInputDisposition> {
+		// Captured before the first await: a submission cancelled while it is still being prepared is
+		// dropped rather than queued for a run that is already ending.
+		const submissionEpoch = this._cancellationEpoch;
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
 		}
@@ -2145,10 +2255,16 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(processedInput.text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
+		const normalized = await this._trackSubmission(
+			submissionEpoch,
+			this._normalizePromptContent(expandedText, processedInput.images),
+		);
+		// Dropped when the user cancelled it while the images were still being resized.
+		if (submissionEpoch !== this._cancellationEpoch) return "handled";
 		if (behavior === "steer") {
-			await this._queueSteer(expandedText, processedInput.images);
+			await this._queueSteer(normalized.text, normalized.images);
 		} else {
-			await this._queueFollowUp(expandedText, processedInput.images);
+			await this._queueFollowUp(normalized.text, normalized.images);
 		}
 		return "queued";
 	}
@@ -2193,7 +2309,7 @@ export class AgentSession {
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
+		if (images?.length) {
 			content.push(...images);
 		}
 		this.agent.steer({
@@ -2210,7 +2326,7 @@ export class AgentSession {
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
-		if (images) {
+		if (images?.length) {
 			content.push(...images);
 		}
 		this.agent.followUp({ role: "user", content, timestamp: Date.now() });
@@ -2354,6 +2470,8 @@ export class AgentSession {
 	 * @returns Object with steering and followUp arrays
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
+		// Submissions still being prepared are queued input too: drop them with the queues.
+		this._cancelPendingWork();
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
@@ -2388,6 +2506,8 @@ export class AgentSession {
 	async abort(): Promise<void> {
 		if (this._isAgentRunActive) {
 			this._agentRunAbortRequested = true;
+			// The run is ending without the submissions still being prepared for it.
+			this._cancelPendingWork();
 		}
 		this.abortRetry();
 		this.abortCompaction();
