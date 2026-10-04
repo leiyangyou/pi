@@ -1,9 +1,54 @@
 import { Type } from "typebox";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { TOOL_SEARCH_TRAILING_NOTE } from "../src/api/openai-responses-shared.ts";
 import { streamSimple } from "../src/compat.ts";
 import type { Api, Context, Model, Tool } from "../src/types.ts";
 
 class PayloadCaptured extends Error {}
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+/** A complete Responses SSE body, so a test can run the real adapter and keep its assistant message. */
+function completedResponsesResponse(): Response {
+	const event = {
+		type: "response.completed",
+		sequence_number: 0,
+		response: {
+			id: "resp_trailing_note",
+			status: "completed",
+			output: [],
+			usage: {
+				input_tokens: 1,
+				output_tokens: 1,
+				total_tokens: 2,
+				input_tokens_details: { cached_tokens: 0 },
+			},
+		},
+	};
+	return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`, {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+/** The Responses model whose compat makes the converter emit the trailing tool note. */
+function trailingNoteModel(): Model<"openai-responses"> {
+	return {
+		...modelBase,
+		id: "deepseek-flash",
+		name: "DeepSeek V4.1 Flash",
+		api: "openai-responses",
+		provider: "deepseek",
+		compat: {
+			supportsDeveloperRole: false,
+			supportsMidConvoSystemMessages: true,
+			supportsToolSearch: true,
+			requiresToolSearchTrailingNote: true,
+		},
+	};
+}
 
 function tool(name: string): Tool {
 	return { name, description: `${name} tool`, parameters: Type.Object({}) };
@@ -338,6 +383,117 @@ describe("transcript system messages", () => {
 		expect(current.input[output(current)]?.call_id).toBe(notedCallId);
 		expect(pair(followup)).toBe(pair(current));
 		expect(followup.input[pair(followup)]?.call_id).toBe(notedCallId);
+	});
+
+	test("records the trailing note on the assistant turn that carried it", async () => {
+		const model = trailingNoteModel();
+		vi.spyOn(globalThis, "fetch").mockImplementation(async () => completedResponsesResponse());
+
+		// The note is a rendering of one request, so the turn it rode is the only place it can be recorded.
+		const addition = await streamSimple(model, additionContext, { apiKey: "test-key" }).result();
+		// A later request re-emits the tool-search pair but sends no note, so its turn must record nothing.
+		const later = await streamSimple(
+			model,
+			{ messages: [...additionContext.messages, { role: "user", content: "after", timestamp: 3 }] },
+			{ apiKey: "test-key" },
+		).result();
+
+		expect(addition.diagnostics).toEqual([
+			{
+				type: "tool_search_trailing_note",
+				timestamp: expect.any(Number),
+				details: {
+					note: "Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
+				},
+			},
+		]);
+		expect(later.diagnostics).toBeUndefined();
+	});
+
+	test("records the note when the request that transmitted it failed", async () => {
+		const model = trailingNoteModel();
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () => new Response("provider exploded", { status: 500, headers: { "content-type": "text/plain" } }),
+		);
+
+		// The note rode a real request, so the turn records it even though the turn itself failed: the
+		// transcript's own stopReason is what tells the reader the turn did not complete.
+		const failed = await streamSimple(model, additionContext, { apiKey: "test-key", maxRetries: 0 }).result();
+
+		expect(failed.stopReason).toBe("error");
+		expect(failed.diagnostics?.map((diagnostic) => diagnostic.type)).toEqual(["tool_search_trailing_note"]);
+	});
+
+	test("records a note that a payload handler pushed off the end", async () => {
+		const model = trailingNoteModel();
+		let sentInput: Array<{ role?: string; content?: unknown }> = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			sentInput = (JSON.parse(String(init?.body)) as { input: typeof sentInput }).input;
+			return completedResponsesResponse();
+		});
+
+		const rewritten = await streamSimple(model, additionContext, {
+			apiKey: "test-key",
+			onPayload: (payload) => {
+				const input = (payload as { input: unknown[] }).input;
+				return {
+					...(payload as object),
+					input: [...input, { role: "developer", content: "appended after the note" }],
+				};
+			},
+		}).result();
+
+		// The note was transmitted, just no longer last, so the record must follow the wire and not the tail.
+		expect(sentInput.some((item) => item.role === "developer" && item.content === TOOL_SEARCH_TRAILING_NOTE)).toBe(
+			true,
+		);
+		expect(rewritten.diagnostics?.map((diagnostic) => diagnostic.type)).toEqual(["tool_search_trailing_note"]);
+	});
+
+	test("records nothing when the turn was already cancelled", async () => {
+		const model = trailingNoteModel();
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => completedResponsesResponse());
+		const controller = new AbortController();
+		controller.abort();
+
+		// No request left the machine, so there is no request for the record to describe.
+		const cancelled = await streamSimple(model, additionContext, {
+			apiKey: "test-key",
+			signal: controller.signal,
+		}).result();
+
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(cancelled.stopReason).toBe("aborted");
+		expect(cancelled.diagnostics).toBeUndefined();
+	});
+
+	test("records a note a payload handler rewrote into content parts", async () => {
+		const model = trailingNoteModel();
+		let sentInput: unknown[] = [];
+		vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+			sentInput = (JSON.parse(String(init?.body)) as { input: unknown[] }).input;
+			return completedResponsesResponse();
+		});
+
+		const rewritten = await streamSimple(model, additionContext, {
+			apiKey: "test-key",
+			onPayload: (payload) => {
+				const input = (payload as { input: unknown[] }).input;
+				return {
+					...(payload as object),
+					input: input.map((item) => {
+						const candidate = item as { role?: string; content?: unknown };
+						return candidate.role === "developer" && candidate.content === TOOL_SEARCH_TRAILING_NOTE
+							? { ...candidate, content: [{ type: "input_text", text: TOOL_SEARCH_TRAILING_NOTE }] }
+							: item;
+					}),
+				};
+			},
+		}).result();
+
+		// The instruction still reached the wire, so the record must follow the text, not its encoding.
+		expect(JSON.stringify(sentInput)).toContain(TOOL_SEARCH_TRAILING_NOTE);
+		expect(rewritten.diagnostics?.map((diagnostic) => diagnostic.type)).toEqual(["tool_search_trailing_note"]);
 	});
 
 	test("folds OpenAI updates into the leading developer message without native support", async () => {

@@ -15,6 +15,7 @@ import type {
 	TranscriptContext,
 	Usage,
 } from "../types.ts";
+import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -25,7 +26,13 @@ import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import {
+	carriesTrailingToolSearchNote,
+	convertResponsesMessages,
+	convertResponsesTools,
+	processResponsesStream,
+	TOOL_SEARCH_TRAILING_NOTE,
+} from "./openai-responses-shared.ts";
 import { buildBaseOptions, resolveSamplingParams } from "./simple-options.ts";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
@@ -123,6 +130,19 @@ export interface OpenAIResponsesOptions extends StreamOptions {
 }
 
 /**
+ * Record the trailing tool note on the turn that transmitted it, so the transcript keeps a request-only
+ * instruction. A no-op for a turn whose request carried no note.
+ */
+function appendNoteDiagnostic(message: AssistantMessage, noteTransmitted: boolean): void {
+	if (!noteTransmitted) return;
+	appendAssistantMessageDiagnostic(message, {
+		type: "tool_search_trailing_note",
+		timestamp: Date.now(),
+		details: { note: TOOL_SEARCH_TRAILING_NOTE },
+	});
+}
+
+/**
  * Generate function for OpenAI Responses API
  */
 export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> = (
@@ -152,6 +172,11 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		// Whether the request this turn dispatches transmits the trailing tool note. Resolved once, before the
+		// request leaves: a payload handler keeps its own reference to `params`, so reading it after the turn
+		// settled could describe a body that was never sent. An already-cancelled turn sends nothing, and a
+		// record there would describe no request at all.
+		let noteTransmitted = false;
 
 		try {
 			// Create OpenAI client
@@ -176,6 +201,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
+			noteTransmitted = !options?.signal?.aborted && carriesTrailingToolSearchNote(params.input);
 			const requestOptions = {
 				...(options?.signal ? { signal: options.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
@@ -210,6 +236,11 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				throw new Error(output.errorMessage || "An unknown error occurred");
 			}
 
+			// The trailing tool note exists only inside the assembled request, and on this path nothing reads
+			// `diagnostics` back into a later request, so the turn is where it can be kept: durable and
+			// greppable, without claiming the turn succeeded — its own stopReason says whether it did.
+			appendNoteDiagnostic(output, noteTransmitted);
+
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
@@ -228,6 +259,10 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			output.errorMessage = errorMessage.includes("subscription_sharing_usage_limit_exceeded")
 				? `${errorMessage}\nCheck your ChatGPT usage: ${CHATGPT_USAGE_URL}`
 				: errorMessage;
+			// A turn that failed or was cancelled after this point keeps the record too: its request carried the
+			// note, and the turn is in the transcript either way. Whether the provider consumed it is not knowable
+			// from here — the turn's own stopReason says how far it got.
+			appendNoteDiagnostic(output, noteTransmitted);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}

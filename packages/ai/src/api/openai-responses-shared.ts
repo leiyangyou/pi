@@ -143,6 +143,37 @@ export interface ConvertResponsesToolsOptions {
 // Message conversion
 // =============================================================================
 
+/**
+ * The trailing developer note reporting a transcript-anchored tool addition. It rides the request whose
+ * final input item carries the addition, so it describes one request rather than the transcript: nothing
+ * replays it, and a later request that merely re-emits the tool-search pair sends no note.
+ */
+export const TOOL_SEARCH_TRAILING_NOTE =
+	"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.";
+
+/**
+ * Whether a request's input transmits that note. The converter appends it as the final item, but a payload
+ * handler may append something after it or restate it as text parts, so this asks the wire — any developer
+ * item carrying the note — rather than one shape at one position. The note is not transcript data, so a
+ * caller records it against the turn it rode.
+ */
+export function carriesTrailingToolSearchNote(input: unknown): boolean {
+	// The Responses API also accepts a bare string as the whole input; only an item list can carry the note.
+	if (!Array.isArray(input)) return false;
+	return input.some((item) => {
+		const candidate = item as { role?: unknown; content?: unknown } | null;
+		if (candidate?.role !== "developer") return false;
+		if (candidate.content === TOOL_SEARCH_TRAILING_NOTE) return true;
+		return (
+			Array.isArray(candidate.content) &&
+			candidate.content.some((part: unknown) => {
+				const textPart = part as { type?: unknown; text?: unknown } | null;
+				return textPart?.type === "input_text" && textPart.text === TOOL_SEARCH_TRAILING_NOTE;
+			})
+		);
+	});
+}
+
 export function convertResponsesMessages<TApi extends Api>(
 	model: Model<TApi>,
 	context: TranscriptContext,
@@ -372,11 +403,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 
 	if (options?.requiresToolSearchTrailingNote && hasTrailingToolSearchPairs) {
-		messages.push({
-			role: "developer",
-			content:
-				"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
-		});
+		messages.push({ role: "developer", content: TOOL_SEARCH_TRAILING_NOTE });
 	}
 	return messages;
 }

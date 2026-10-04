@@ -561,7 +561,12 @@ export interface AssistantMessage {
 	providerThinkingLevel?: string;
 	/** Pi thinking level the agent loop requested for this response. Absent outside the agent loop and for legacy responses. */
 	thinkingLevel?: ModelThinkingLevel;
-	diagnostics?: AssistantMessageDiagnostic[]; // Redacted provider/runtime diagnostics for failures and recoveries.
+	/**
+	 * Redacted provider/runtime diagnostics for failures and recoveries, attached to the turn that produced
+	 * this message. Adapters that rebuild a provider payload field by field never read this field; one that
+	 * serializes whole messages (`pi-messages`) does transmit it, so nothing unshareable belongs in it.
+	 */
+	diagnostics?: AssistantMessageDiagnostic[];
 	usage: Usage;
 	stopReason: StopReason;
 	deferred?: DeferredHandle;
