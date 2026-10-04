@@ -393,7 +393,7 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 		requiresToolSearchTrailingNote: Type.Optional(
 			Type.Boolean({
 				description:
-					"Add a trailing developer note reporting a transcript-anchored tool addition, on the request whose final input message carries that addition.",
+					"Add a trailing developer note accompanying the tool-search pair on every request that re-emits it. A provider that requires a non-assistant item after the pair rejects the request without it.",
 				default: false,
 			}),
 		),

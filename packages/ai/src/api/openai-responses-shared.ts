@@ -155,6 +155,38 @@ export interface ConvertResponsesToolsOptions {
 // =============================================================================
 
 /**
+ * The developer note that rides directly behind each tool-search pair. DeepSeek's Responses endpoint rejects
+ * a request whose input carries the pair with nothing but assistant/tool items after it, and a `user` or
+ * `developer` item behind the pair is what clears that. Position is only constrained to being after the
+ * pair, so the note sits in the request's cached prefix instead of being re-sent as new input at the end.
+ */
+export const TOOL_SEARCH_TRAILING_NOTE =
+	"Tools listed in a tool search result above are callable unless a later update removed them.";
+
+/**
+ * Whether a request's input transmits that note. The converter appends it behind the pair that triggers
+ * it, but a payload handler may move it, append something else, or restate it as text parts, so this asks
+ * the wire — any developer item carrying the note — rather than one shape at one position. The note is not
+ * transcript data, so a caller records it against the turn it rode.
+ */
+export function carriesTrailingToolSearchNote(input: unknown): boolean {
+	// The Responses API also accepts a bare string as the whole input; only an item list can carry the note.
+	if (!Array.isArray(input)) return false;
+	return input.some((item) => {
+		const candidate = item as { role?: unknown; content?: unknown } | null;
+		if (candidate?.role !== "developer") return false;
+		if (candidate.content === TOOL_SEARCH_TRAILING_NOTE) return true;
+		return (
+			Array.isArray(candidate.content) &&
+			candidate.content.some((part: unknown) => {
+				const textPart = part as { type?: unknown; text?: unknown } | null;
+				return textPart?.type === "input_text" && textPart.text === TOOL_SEARCH_TRAILING_NOTE;
+			})
+		);
+	});
+}
+
+/**
  * How a Responses transport expresses tool changes.
  *
  * `additional_tools` items accumulate: a later item adds tools and replaces same-name
@@ -229,11 +261,6 @@ export function convertResponsesMessages<TApi extends Api>(
 	let declaredAdditionalTools = false;
 	/** Tools announced as removed and not declared again since. */
 	const unavailableTools = new Set<string>();
-	// The trailing note asserts that tool definitions were updated *just now*, so it may only ride the request
-	// whose final input message is the one carrying the addition. The pair itself must keep being emitted on
-	// every later request — an item already sent stays in the request — so only the note's gate is tail-scoped.
-	// Without this, one mid-session addition kept the note on every subsequent request of the session.
-	let hasTrailingToolSearchPairs = false;
 	// A name must be declared once per request, or a strict endpoint rejects it with "Tool names must be
 	// unique". `hasToolRedefinitions` does not catch this: it only reports a name returning with a
 	// *different* definition, which is the case a name-referencing transport cannot express.
@@ -275,7 +302,11 @@ export function convertResponsesMessages<TApi extends Api>(
 			status: "completed",
 			tools: convertResponsesTools(tools, { ...options?.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
-		if (message === transformedMessages.at(-1)) hasTrailingToolSearchPairs = true;
+		// Behind its own pair, so every pair satisfies the provider rule locally and the note stays in the
+		// request's cached prefix instead of being re-sent as new input on every turn.
+		if (options?.requiresToolSearchTrailingNote) {
+			messages.push({ role: "developer", content: TOOL_SEARCH_TRAILING_NOTE });
+		}
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const pushConfigurationUpdate = (effort: string): void => {
@@ -443,13 +474,6 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 	if (options?.configurationUpdateEffort !== undefined) pushConfigurationUpdate(options.configurationUpdateEffort);
 
-	if (options?.requiresToolSearchTrailingNote && hasTrailingToolSearchPairs) {
-		messages.push({
-			role: "developer",
-			content:
-				"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
-		});
-	}
 	return messages;
 }
 
