@@ -229,7 +229,11 @@ export function convertResponsesMessages<TApi extends Api>(
 	let declaredAdditionalTools = false;
 	/** Tools announced as removed and not declared again since. */
 	const unavailableTools = new Set<string>();
-	let hasToolSearchPairs = false;
+	// The trailing note asserts that tool definitions were updated *just now*, so it may only ride the request
+	// whose final input message is the one carrying the addition. The pair itself must keep being emitted on
+	// every later request — an item already sent stays in the request — so only the note's gate is tail-scoped.
+	// Without this, one mid-session addition kept the note on every subsequent request of the session.
+	let hasTrailingToolSearchPairs = false;
 	// A name must be declared once per request, or a strict endpoint rejects it with "Tool names must be
 	// unique". `hasToolRedefinitions` does not catch this: it only reports a name returning with a
 	// *different* definition, which is the case a name-referencing transport cannot express.
@@ -271,7 +275,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			status: "completed",
 			tools: convertResponsesTools(tools, { ...options?.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
-		hasToolSearchPairs = true;
+		if (message === transformedMessages.at(-1)) hasTrailingToolSearchPairs = true;
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const pushConfigurationUpdate = (effort: string): void => {
@@ -439,7 +443,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	}
 	if (options?.configurationUpdateEffort !== undefined) pushConfigurationUpdate(options.configurationUpdateEffort);
 
-	if (options?.requiresToolSearchTrailingNote && hasToolSearchPairs) {
+	if (options?.requiresToolSearchTrailingNote && hasTrailingToolSearchPairs) {
 		messages.push({
 			role: "developer",
 			content:

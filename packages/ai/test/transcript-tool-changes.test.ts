@@ -327,7 +327,7 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool"]);
 	});
 
-	test("keeps a trailing note after anchored additions on every pair-bearing request", async () => {
+	test("keeps the trailing note only while the addition is the final input", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "deepseek-flash",
@@ -355,20 +355,38 @@ describe("transcript system messages", () => {
 		const followup = await capturePayload<Payload>(model, {
 			messages: [...additionContext.messages, { role: "user", content: "after", timestamp: 3 }],
 		});
+		const systemAfter = await capturePayload<Payload>(model, {
+			messages: [...additionContext.messages, { role: "system", content: "later guidance", timestamp: 3 }],
+		});
 		for (const payload of [current, followup]) {
 			expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
-			expect(payload.input.at(-1)).toEqual({
-				role: "developer",
-				content:
-					"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
-			});
 			expect(
 				payload.input.find((item) => item.type === "tool_search_output")?.tools?.map((tool) => tool.name),
 			).toEqual(["late_tool"]);
 		}
+		const trailingNote = {
+			role: "developer",
+			content:
+				"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
+		};
+		// The addition is this request's final input, so the note belongs here…
+		expect(current.input.at(-1)).toEqual(trailingNote);
+		// …and not on a later request that merely re-emits the pair: nothing was updated, so the note would be false.
+		expect(followup.input.some((item) => item.role === "developer")).toBe(false);
+		expect(followup.input.at(-1)).toEqual({ role: "user", content: [{ type: "input_text", text: "after" }] });
+		// A system checkpoint that follows the addition is not the addition, so the note is suppressed there too.
+		expect(systemAfter.input.some((item) => item.role === "developer")).toBe(false);
+
 		const pair = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_call");
-		expect(pair(current)).toBe(pair(followup));
-		expect(current.input[pair(current)]?.call_id).toBe(followup.input[pair(followup)]?.call_id);
+		const output = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_output");
+		const notedCallId = current.input[pair(current)]?.call_id;
+		expect(pair(current)).toBeGreaterThanOrEqual(0);
+		expect(output(current)).toBeGreaterThanOrEqual(0);
+		expect(typeof notedCallId).toBe("string");
+		expect(notedCallId).not.toBe("");
+		expect(current.input[output(current)]?.call_id).toBe(notedCallId);
+		expect(pair(followup)).toBe(pair(current));
+		expect(followup.input[pair(followup)]?.call_id).toBe(notedCallId);
 	});
 
 	test("folds OpenAI updates into the leading developer message without native support", async () => {
