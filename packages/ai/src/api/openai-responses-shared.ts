@@ -182,7 +182,11 @@ export function convertResponsesMessages<TApi extends Api>(
 		normalizedContext.messages,
 		(options?.supportsAdditionalTools ?? false) || (options?.supportsToolSearch ?? false),
 	);
-	let hasToolSearchPairs = false;
+	// The trailing note asserts that tool definitions were updated *just now*, so it may only ride the request
+	// whose final input message is the one carrying the addition. The pair itself must keep being emitted on
+	// every later request — an item already sent stays in the request — so only the note's gate is tail-scoped.
+	// Without this, one mid-session addition kept the note on every subsequent request of the session.
+	let hasTrailingToolSearchPairs = false;
 	// A name the flat field already declares must not be repeated as an item, or the request declares it
 	// twice and a strict endpoint rejects it with "Tool names must be unique". On this path the flat field
 	// is the initial tools, so a tool that leaves and returns unchanged is already there.
@@ -225,7 +229,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			status: "completed",
 			tools: convertResponsesTools(tools, { ...options.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
-		hasToolSearchPairs = true;
+		if (message === transformedMessages.at(-1)) hasTrailingToolSearchPairs = true;
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
@@ -367,7 +371,7 @@ export function convertResponsesMessages<TApi extends Api>(
 		if (!isLeadingSystemMessage) msgIndex++;
 	}
 
-	if (options?.requiresToolSearchTrailingNote && hasToolSearchPairs) {
+	if (options?.requiresToolSearchTrailingNote && hasTrailingToolSearchPairs) {
 		messages.push({
 			role: "developer",
 			content:
