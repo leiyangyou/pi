@@ -323,7 +323,7 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool"]);
 	});
 
-	test("keeps the trailing note only while the addition is the final input", async () => {
+	test("keeps the trailing note on every request that re-emits the tool-search pair", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "deepseek-flash",
@@ -354,24 +354,26 @@ describe("transcript system messages", () => {
 		const systemAfter = await capturePayload<Payload>(model, {
 			messages: [...additionContext.messages, { role: "system", content: "later guidance", timestamp: 3 }],
 		});
-		for (const payload of [current, followup]) {
+		for (const payload of [current, followup, systemAfter]) {
 			expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
 			expect(
 				payload.input.find((item) => item.type === "tool_search_output")?.tools?.map((tool) => tool.name),
 			).toEqual(["late_tool"]);
 		}
-		const trailingNote = {
-			role: "developer",
-			content:
-				"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
-		};
-		// The addition is this request's final input, so the note belongs here…
-		expect(current.input.at(-1)).toEqual(trailingNote);
-		// …and not on a later request that merely re-emits the pair: nothing was updated, so the note would be false.
-		expect(followup.input.some((item) => item.role === "developer")).toBe(false);
-		expect(followup.input.at(-1)).toEqual({ role: "user", content: [{ type: "input_text", text: "after" }] });
-		// A system checkpoint that follows the addition is not the addition, so the note is suppressed there too.
-		expect(systemAfter.input.some((item) => item.role === "developer")).toBe(false);
+		const trailingNote = { role: "developer", content: TOOL_SEARCH_TRAILING_NOTE };
+		// The pair rides every later request, so the note must too: a provider that requires a non-assistant
+		// item after the pair rejects a request whose tail is only assistant/tool items, and DeepSeek's
+		// Responses endpoint is exactly that provider (probed live 2026-10-08). Nothing in the wording
+		// claims a fresh change, so re-sending it on a request that merely re-emits the pair reports nothing
+		// false.
+		for (const payload of [current, followup, systemAfter]) {
+			expect(payload.input.at(-1)).toEqual(trailingNote);
+			expect(
+				payload.input.filter((item) => item.role === "developer" && item.content === TOOL_SEARCH_TRAILING_NOTE),
+			).toHaveLength(1);
+		}
+		// A system checkpoint that follows the addition is still a request that re-emits the pair.
+		expect(followup.input.at(-2)).toEqual({ role: "user", content: [{ type: "input_text", text: "after" }] });
 
 		const pair = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_call");
 		const output = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_output");
@@ -385,29 +387,57 @@ describe("transcript system messages", () => {
 		expect(followup.input[pair(followup)]?.call_id).toBe(notedCallId);
 	});
 
-	test("records the trailing note on the assistant turn that carried it", async () => {
+	test("keeps the trailing note truthful when a later update removes the added tool", async () => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "deepseek-flash",
+			name: "DeepSeek V4.1 Flash",
+			api: "openai-responses",
+			provider: "deepseek",
+			compat: {
+				supportsDeveloperRole: false,
+				supportsMidConvoSystemMessages: true,
+				supportsToolSearch: true,
+				requiresToolSearchTrailingNote: true,
+			},
+		};
+		type Payload = { input: Array<{ type?: string; role?: string; content?: string }> };
+		// The pair is already in the transcript, so it keeps riding; the removal arrives as its own update.
+		const removed = await capturePayload<Payload>(model, {
+			messages: [
+				...additionContext.messages,
+				{ role: "system", content: "", toolsRemoved: [{ name: "late_tool" }], timestamp: 3 },
+			],
+		});
+		expect(removed.input.some((item) => item.type === "tool_search_call")).toBe(true);
+		expect(removed.input.at(-1)).toEqual({ role: "developer", content: TOOL_SEARCH_TRAILING_NOTE });
+		// The note rides requests the removal has already superseded, so it must not promise callability the
+		// transcript has since taken away. The tool-set patch above it is what reports the removal.
+		expect(TOOL_SEARCH_TRAILING_NOTE).not.toMatch(/(is|are) callable now/);
+	});
+
+	test("records the trailing note on every turn whose request carried it", async () => {
 		const model = trailingNoteModel();
 		vi.spyOn(globalThis, "fetch").mockImplementation(async () => completedResponsesResponse());
 
-		// The note is a rendering of one request, so the turn it rode is the only place it can be recorded.
+		// The note is a rendering of one request, so each turn that received it is where it gets recorded.
 		const addition = await streamSimple(model, additionContext, { apiKey: "test-key" }).result();
-		// A later request re-emits the tool-search pair but sends no note, so its turn must record nothing.
+		// A later request re-emits the tool-search pair and therefore sends the note again.
 		const later = await streamSimple(
 			model,
 			{ messages: [...additionContext.messages, { role: "user", content: "after", timestamp: 3 }] },
 			{ apiKey: "test-key" },
 		).result();
 
-		expect(addition.diagnostics).toEqual([
+		const noteDiagnostic = [
 			{
 				type: "tool_search_trailing_note",
 				timestamp: expect.any(Number),
-				details: {
-					note: "Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.",
-				},
+				details: { note: TOOL_SEARCH_TRAILING_NOTE },
 			},
-		]);
-		expect(later.diagnostics).toBeUndefined();
+		];
+		expect(addition.diagnostics).toEqual(noteDiagnostic);
+		expect(later.diagnostics).toEqual(noteDiagnostic);
 	});
 
 	test("records the note when the request that transmitted it failed", async () => {
@@ -664,9 +694,7 @@ describe("transcript system messages", () => {
 		]);
 		expect(payload.input.some((item) => item.type === "tool_search_call")).toBe(false);
 		expect(
-			payload.input.some(
-				(item) => item.role === "developer" && item.content?.startsWith("Tool definitions were updated"),
-			),
+			payload.input.some((item) => item.role === "developer" && item.content === TOOL_SEARCH_TRAILING_NOTE),
 		).toBe(false);
 	});
 

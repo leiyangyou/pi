@@ -909,7 +909,7 @@ export interface OpenAIResponsesCompat {
 	supportsAdditionalTools?: boolean;
 	/** Whether the model supports client-executed tool search for transcript-anchored additions. Default: false. */
 	supportsToolSearch?: boolean;
-	/** Add a trailing developer note reporting a transcript-anchored tool addition, on the request whose final input message carries that addition. Default: false. */
+	/** Add a trailing developer note accompanying the tool-search pair, on every request that re-emits that pair. A provider that requires a non-assistant item after the pair rejects the request without it. Default: false. */
 	requiresToolSearchTrailingNote?: boolean;
 	/** Whether the model accepts `prompt_cache_options` (OpenAI GPT-5.6+ prompt caching). Older OpenAI models reject the parameter. Default: false. */
 	supportsExplicitPromptCacheMode?: boolean;

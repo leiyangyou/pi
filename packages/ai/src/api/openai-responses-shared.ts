@@ -144,12 +144,15 @@ export interface ConvertResponsesToolsOptions {
 // =============================================================================
 
 /**
- * The trailing developer note reporting a transcript-anchored tool addition. It rides the request whose
- * final input item carries the addition, so it describes one request rather than the transcript: nothing
- * replays it, and a later request that merely re-emits the tool-search pair sends no note.
+ * The trailing developer note accompanying the tool-search pair. It rides every request that re-emits the
+ * pair, which is what a provider that requires a non-assistant item after the pair needs. The pair and the
+ * note both describe the transcript, not one request: the pair is re-derived on every later request, and a
+ * removal or redefinition recorded after the addition is sent as its own update, so the note states
+ * callability subject to those later updates instead of asserting a fresh change. Nothing replays it, so a
+ * caller records it against the turn it rode.
  */
 export const TOOL_SEARCH_TRAILING_NOTE =
-	"Tool definitions were updated above. Any tool listed in the latest tool search result is callable now.";
+	"Tools listed in a tool search result above are callable unless a later update removed them.";
 
 /**
  * Whether a request's input transmits that note. The converter appends it as the final item, but a payload
@@ -213,11 +216,15 @@ export function convertResponsesMessages<TApi extends Api>(
 		normalizedContext.messages,
 		(options?.supportsAdditionalTools ?? false) || (options?.supportsToolSearch ?? false),
 	);
-	// The trailing note asserts that tool definitions were updated *just now*, so it may only ride the request
-	// whose final input message is the one carrying the addition. The pair itself must keep being emitted on
-	// every later request — an item already sent stays in the request — so only the note's gate is tail-scoped.
-	// Without this, one mid-session addition kept the note on every subsequent request of the session.
-	let hasTrailingToolSearchPairs = false;
+	// The pair is re-emitted on every later request (an item already sent stays in the request), and the note
+	// rides all of them, not only the request whose final message carries the addition. DeepSeek's Responses
+	// endpoint rejects a request whose input carries the pair with nothing but assistant/tool items after it —
+	// `400 The reasoning_text in the thinking mode must be passed back to the API` — and a `user` or
+	// `developer` item after the pair is what clears it (probed live 2026-10-08: that shape failed 4/4, the
+	// same payload plus this note passed 3/3, and a mid-conversation `system` item after the pair does not
+	// count). So the note is not scoped to the addition's own request: a turn that adds a tool and then keeps
+	// working would otherwise be rejected outright.
+	let hasToolSearchPairs = false;
 	// A name the flat field already declares must not be repeated as an item, or the request declares it
 	// twice and a strict endpoint rejects it with "Tool names must be unique". On this path the flat field
 	// is the initial tools, so a tool that leaves and returns unchanged is already there.
@@ -260,7 +267,7 @@ export function convertResponsesMessages<TApi extends Api>(
 			status: "completed",
 			tools: convertResponsesTools(tools, { ...options.toolOptions, toolSearchResult: true }),
 		} satisfies ResponseToolSearchOutputItemParam);
-		if (message === transformedMessages.at(-1)) hasTrailingToolSearchPairs = true;
+		hasToolSearchPairs = true;
 	};
 	const includeInitialSystemMessage = options?.includeSystemPrompt ?? true;
 	const compat = model.compat as { supportsDeveloperRole?: boolean } | undefined;
@@ -402,7 +409,7 @@ export function convertResponsesMessages<TApi extends Api>(
 		if (!isLeadingSystemMessage) msgIndex++;
 	}
 
-	if (options?.requiresToolSearchTrailingNote && hasTrailingToolSearchPairs) {
+	if (options?.requiresToolSearchTrailingNote && hasToolSearchPairs) {
 		messages.push({ role: "developer", content: TOOL_SEARCH_TRAILING_NOTE });
 	}
 	return messages;
