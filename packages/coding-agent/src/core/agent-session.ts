@@ -372,6 +372,21 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 	return tokens;
 }
 
+/** Move one message to the front, keeping every other message's order. */
+function moveHeadToFront(messages: AgentMessage[], at: number): AgentMessage[] {
+	const head = messages[at];
+	if (!head || at === 0) return messages;
+	return [head, ...messages.slice(0, at), ...messages.slice(at + 1)];
+}
+
+/** Whether a recorded entry holds a turn, which a head is written before and a delta arrives behind. */
+function isTurnEntry(entry: SessionEntry): boolean {
+	return (
+		entry.type === "message" &&
+		(entry.message.role === "user" || entry.message.role === "assistant" || entry.message.role === "toolResult")
+	);
+}
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -797,6 +812,47 @@ export class AgentSession {
 		return { ...context, messages: this.sessionManager.buildSessionProjection().messages };
 	}
 
+	/**
+	 * Lead the request's transcript with the prompt head.
+	 *
+	 * A provider reads the rendered prompt and the initial tool declarations from the leading item, so a head
+	 * behind anything else drops the request off the anchored tool path: the flat tool list is materialised
+	 * from every live tool, and each tool activation rewrites the front of the request and re-bills the
+	 * conversation behind it. A provider that accepts mid-conversation system messages keeps the transcript as
+	 * it stands, so the head has to be put back; one without that support folds it in anyway. No byte of the
+	 * head moves, and system messages never reorder among themselves.
+	 *
+	 * The head is the message the session marked when it wrote a transcript region's first system message. A
+	 * carrier can record a block before that (pi-context's `<context_window>` boot does), and a shell result,
+	 * a custom message or a branch summary can be recorded ahead of it too.
+	 *
+	 * A transcript recorded before the head was marked carries no marker, so the head is recovered from the
+	 * recorded ancestry: a session writes its head before its first turn, while a section delta arrives behind
+	 * a turn. Recovery reads the entries rather than the projected messages, because an edit or an omission
+	 * can hide a turn the transcript still holds, and that turn is what separates a delta from a head.
+	 *
+	 * Only a turn the region itself recorded disqualifies a candidate. A compaction re-inserts the turns it
+	 * retained ahead of the region's own entries, and those older turns say nothing about the region, so the
+	 * boundary is read from the branch's chronology rather than the projection's order.
+	 */
+	private _leadRequestWithHead(projection: SessionProjection): AgentMessage[] {
+		const messages = projection.messages;
+		const marked = messages.findIndex((message) => message.role === "system" && message.leading === true);
+		if (marked >= 0) return moveHeadToFront(messages, marked);
+		const branch = this.sessionManager.getBranch();
+		const compaction = getLatestCompactionEntry(branch);
+		const regionStart = compaction ? branch.findIndex((entry) => entry.id === compaction.id) + 1 : 0;
+		const regionEntryIds = new Set(branch.slice(regionStart).map((entry) => entry.id));
+		let head: AgentMessage | undefined;
+		for (const { sourceEntry, messages: contribution } of projection.entries) {
+			if (isTurnEntry(sourceEntry) && regionEntryIds.has(sourceEntry.id)) return messages;
+			head = contribution.find((message) => message.role === "system");
+			if (head) break;
+		}
+		const at = head ? messages.indexOf(head) : -1;
+		return at > 0 ? moveHeadToFront(messages, at) : messages;
+	}
+
 	private _installAgentRequestProjection(): void {
 		const previousPrepareRequest = this.agent.prepareRequest;
 		this.agent.prepareRequest = async (request, signal) => {
@@ -806,7 +862,7 @@ export class AgentSession {
 				const projection = this.sessionManager.buildSessionProjection();
 				const canonicalContext = {
 					...request.context,
-					messages: projection.messages,
+					messages: this._leadRequestWithHead(projection),
 					// Messages declare the provider-visible loadout; context.tools keeps executable implementations.
 					tools: this.agent.state.tools.slice(),
 				};
@@ -1783,6 +1839,14 @@ export class AgentSession {
 	}
 
 	/**
+	 * Whether the recorded transcript holds a system message at all. The first one written into a
+	 * transcript region is its leading prompt message, so this is what decides which message is the head.
+	 */
+	private _transcriptHasSystemMessage(): boolean {
+		return this.sessionManager.buildSessionContext().messages.some((message) => message.role === "system");
+	}
+
+	/**
 	 * Send a forced prompt as the provider's leading system prompt without recording it.
 	 *
 	 * A `before_agent_start` handler that returns `systemPrompt` needs that exact text at the
@@ -2006,7 +2070,13 @@ export class AgentSession {
 		}
 		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
 		this._runSystemPromptOptions = result.systemPromptOptions;
-		if (updateMessage) messages.unshift(updateMessage);
+		if (updateMessage) {
+			// The transcript's first system message is its leading prompt message; every later one is a
+			// delta that names the sections it replaces. Mark the head so a request can lead with it even
+			// when a carrier, a shell result or a branch summary was recorded ahead of it.
+			if (!this._transcriptHasSystemMessage()) updateMessage.leading = true;
+			messages.unshift(updateMessage);
+		}
 		return messages;
 	}
 

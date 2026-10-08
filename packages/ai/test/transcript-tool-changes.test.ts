@@ -372,7 +372,7 @@ describe("transcript system messages", () => {
 		).toEqual(["late_tool"]);
 	});
 
-	test("keeps the trailing note on every request that re-emits the tool-search pair", async () => {
+	test("keeps the note behind each tool-search pair on every request that re-emits one", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "deepseek-flash",
@@ -409,20 +409,25 @@ describe("transcript system messages", () => {
 				payload.input.find((item) => item.type === "tool_search_output")?.tools?.map((tool) => tool.name),
 			).toEqual(["late_tool"]);
 		}
-		const trailingNote = { role: "developer", content: TOOL_SEARCH_TRAILING_NOTE };
+		const note = { role: "developer", content: TOOL_SEARCH_TRAILING_NOTE };
 		// The pair rides every later request, so the note must too: a provider that requires a non-assistant
 		// item after the pair rejects a request whose tail is only assistant/tool items, and DeepSeek's
-		// Responses endpoint is exactly that provider (probed live 2026-10-08). Nothing in the wording
-		// claims a fresh change, so re-sending it on a request that merely re-emits the pair reports nothing
-		// false.
+		// Responses endpoint is exactly that provider (probed live 2026-10-08). The note sits directly behind
+		// the pair it explains, which keeps it inside the request's cached prefix instead of re-sending it as
+		// new input on every turn (probed 2026-10-09: that shape is accepted 3/3, a pair with no note at all
+		// is rejected 3/3).
 		for (const payload of [current, followup, systemAfter]) {
-			expect(payload.input.at(-1)).toEqual(trailingNote);
+			const pairs = payload.input.filter((item) => item.type === "tool_search_output");
 			expect(
 				payload.input.filter((item) => item.role === "developer" && item.content === TOOL_SEARCH_TRAILING_NOTE),
-			).toHaveLength(1);
+			).toHaveLength(pairs.length);
+			for (const pair of pairs) {
+				expect(payload.input[payload.input.indexOf(pair) + 1]).toEqual(note);
+			}
 		}
-		// A system checkpoint that follows the addition is still a request that re-emits the pair.
-		expect(followup.input.at(-2)).toEqual({ role: "user", content: [{ type: "input_text", text: "after" }] });
+		// A system checkpoint that follows the addition is still a request that re-emits the pair, and the
+		// note rides behind that pair, so the transcript's own last item stays last.
+		expect(followup.input.at(-1)).toEqual({ role: "user", content: [{ type: "input_text", text: "after" }] });
 
 		const pair = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_call");
 		const output = (payload: Payload) => payload.input.findIndex((item) => item.type === "tool_search_output");
@@ -436,7 +441,7 @@ describe("transcript system messages", () => {
 		expect(followup.input[pair(followup)]?.call_id).toBe(notedCallId);
 	});
 
-	test("keeps the trailing note truthful when a later update removes the added tool", async () => {
+	test("keeps the note behind the pair truthful when a later update removes the added tool", async () => {
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "deepseek-flash",
@@ -459,7 +464,8 @@ describe("transcript system messages", () => {
 			],
 		});
 		expect(removed.input.some((item) => item.type === "tool_search_call")).toBe(true);
-		expect(removed.input.at(-1)).toEqual({ role: "developer", content: TOOL_SEARCH_TRAILING_NOTE });
+		const removedPair = removed.input.findIndex((item) => item.type === "tool_search_output");
+		expect(removed.input[removedPair + 1]).toEqual({ role: "developer", content: TOOL_SEARCH_TRAILING_NOTE });
 		// The note rides requests the removal has already superseded, so it must not promise callability the
 		// transcript has since taken away. The tool-set patch above it is what reports the removal.
 		expect(TOOL_SEARCH_TRAILING_NOTE).not.toMatch(/(is|are) callable now/);

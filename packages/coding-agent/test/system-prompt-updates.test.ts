@@ -138,6 +138,8 @@ describe("system prompt updates", () => {
 			expect(forced).toEqual({
 				role: "system",
 				content: "Exact prompt.",
+				// The forced text is projected onto the recorded head, which keeps its identity.
+				leading: true,
 				toolsAdded: systemMessages[0]?.[0]?.toolsAdded,
 				timestamp: systemMessages[0]?.[0]?.timestamp,
 			});

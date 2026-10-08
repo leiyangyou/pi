@@ -1280,7 +1280,9 @@ export class SessionManager {
 			details,
 			usage,
 			fromHook,
-			...(systemMessage ? { systemMessage: { ...systemMessage, timestamp: new Date(timestamp).getTime() } } : {}),
+			...(systemMessage
+				? { systemMessage: { ...systemMessage, leading: true, timestamp: new Date(timestamp).getTime() } }
+				: {}),
 		};
 		this._appendEntry(entry);
 		return entry.id;

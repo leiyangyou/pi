@@ -556,6 +556,15 @@ export interface SystemMessage {
 	/** Instruction text. On the leading message this is the base prompt; later, additional instructions. */
 	content: string | TextContent[];
 	/**
+	 * Set on the one message that carries a transcript's base prompt and initial tool declarations.
+	 * A provider reads the prompt and the initial tools from the leading item, so Pi keeps this message
+	 * first in every request: a carrier can record a block before a session writes its head, and a shell
+	 * result or a branch summary can be recorded ahead of it too. Every other system message is a delta
+	 * that names the sections it replaces. Absent on transcripts recorded before this was marked, where
+	 * Pi falls back to leading with the earliest system message that only carrier blocks precede.
+	 */
+	leading?: true;
+	/**
 	 * Named, ordered prompt sections rendered verbatim after `content`. The leading message
 	 * declares them; later messages replace sections by name, and `null` removes one. Keep
 	 * each section self-delimiting (a tag, a heading) so the model can relate an update to

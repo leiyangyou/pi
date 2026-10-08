@@ -313,10 +313,10 @@ function restoreSystemMessages(
  * that reordered the conversation or added a system message of its own.
  *
  * The items Pi recorded are found by identity, so a handler that only added or removed conversation
- * items keeps its own ordering around them. Requiring the leading item to be Pi's head would be wrong
- * here: a carrier can register a block ahead of it (`item 0` was pi-context's `<context_window>` user
- * block in every measured harness run), and bailing on that sent the whole request back through the
- * fold, which is the shape the cache-prefix harness reproduced on the deployed tree.
+ * items keeps its own ordering around them. The leading item is Pi's head by the time this runs, because a
+ * request is projected with the head first (`AgentSession._leadRequestWithHead`) before any handler sees the
+ * transcript, so a handler block registered ahead of the head does not send the request back through the
+ * fold.
  */
 function spliceSystemMessages(current: AgentMessage[], returned: AgentMessage[]): AgentMessage[] | undefined {
 	const position = new Map<AgentMessage, number>();
