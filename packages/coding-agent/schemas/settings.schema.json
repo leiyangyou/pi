@@ -298,6 +298,10 @@
                 "type": "boolean",
                 "description": "When false, start empty and only apply explicit resource patterns."
               },
+              "extensionImplementationRoot": {
+                "type": "string",
+                "description": "Package root whose implementation stands in for this package's own."
+              },
               "extensions": {
                 "type": "array",
                 "items": {

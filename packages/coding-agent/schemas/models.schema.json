@@ -1031,6 +1031,16 @@
           "description": "Whether the model supports client-executed tool search for transcript-anchored additions.",
           "default": false
         },
+        "requiresToolSearchTrailingNote": {
+          "type": "boolean",
+          "description": "Add a trailing developer note accompanying the tool-search pair on every request that re-emits it. A provider that requires a non-assistant item after the pair rejects the request without it.",
+          "default": false
+        },
+        "requiresFlatToolsWithReasoning": {
+          "type": "boolean",
+          "description": "Declare the tools in the plain top-level list on any request that replays reasoning, instead of riding a synthetic tool-search pair. DeepSeek's Responses endpoint rejects the pair in thinking mode.",
+          "default": false
+        },
         "supportsExplicitPromptCacheMode": {
           "type": "boolean",
           "description": "Whether the model accepts prompt_cache_options. Older OpenAI models reject the parameter.",

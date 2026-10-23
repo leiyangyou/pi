@@ -397,6 +397,14 @@ export const OpenAIResponsesCompatSchema = Type.Object(
 				default: false,
 			}),
 		),
+		requiresFlatToolsInThinkingMode: Type.Optional(
+			Type.Boolean({
+				/* DeepSeek rejects a synthetic tool-search pair whenever reasoning.effort is set. */
+				description:
+					"Declare the tools in the plain top-level list while a request runs in thinking mode, instead of riding a synthetic tool-search pair. DeepSeek's Responses endpoint rejects the pair in thinking mode.",
+				default: false,
+			}),
+		),
 		supportsExplicitPromptCacheMode: Type.Optional(
 			Type.Boolean({
 				description: "Whether the model accepts prompt_cache_options. Older OpenAI models reject the parameter.",

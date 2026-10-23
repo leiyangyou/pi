@@ -55,10 +55,11 @@ function tool(name: string): Tool {
 	return { name, description: `${name} tool`, parameters: Type.Object({}) };
 }
 
-async function capturePayload<T>(model: Model<Api>, context: Context): Promise<T> {
+async function capturePayload<T>(model: Model<Api>, context: Context, reasoning?: "high"): Promise<T> {
 	let captured: T | undefined;
 	const stream = streamSimple(model, context, {
 		apiKey: "test-key",
+		...(reasoning ? { reasoning } : {}),
 		onPayload: (payload) => {
 			captured = payload as T;
 			throw new PayloadCaptured();
@@ -1080,4 +1081,83 @@ test("never declares a tool twice when it is added again in a later message", as
 	expect([...counts].filter(([, count]) => count > 1)).toEqual([]);
 	expect(counts.get("update_goal")).toBe(1);
 	expect(counts.get("create_goal")).toBe(1);
+});
+
+// DeepSeek's Responses endpoint rejects a synthetic tool-search pair on any request that replays a signed
+// reasoning item: "400 The `reasoning_text` in the thinking mode must be passed back to the API". Measured
+// 2026-10-24 against api.deepseek.com — the same payload without the pair returns 200, removing the
+// reasoning item or moving the trailing note does not help, and the flat top-level list does. So a model
+// with `requiresFlatToolsWithReasoning` declares its current tools plainly instead of riding the pair.
+const reasoningSignature = JSON.stringify({
+	type: "reasoning",
+	id: "rs_replayed",
+	status: "completed",
+	summary: [],
+	content: [{ type: "reasoning_text", text: "an earlier thought" }],
+});
+
+function replayedReasoningTranscript(): Message[] {
+	return [
+		{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
+		{ role: "user", content: "before", timestamp: 1 },
+		{
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "an earlier thought", thinkingSignature: reasoningSignature }],
+			api: "openai-responses",
+			provider: "deepseek",
+			model: "deepseek-flash",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		},
+		{ role: "user", content: "after", timestamp: 3 },
+		{ role: "system", content: "", toolsAdded: [lateTool], timestamp: 4 },
+	];
+}
+
+function thinkingModel(requiresFlatToolsInThinkingMode: boolean): Model<"openai-responses"> {
+	return {
+		...modelBase,
+		id: "deepseek-flash",
+		name: "DeepSeek V4.1 Flash",
+		api: "openai-responses",
+		provider: "deepseek",
+		compat: {
+			supportsDeveloperRole: false,
+			supportsMidConvoSystemMessages: true,
+			supportsToolSearch: true,
+			requiresToolSearchTrailingNote: true,
+			requiresFlatToolsInThinkingMode,
+		},
+	};
+}
+
+test("declares the tools plainly in thinking mode when the model rejects the tool-search pair", async () => {
+	const payload = await capturePayload<{
+		tools?: Array<{ name: string }>;
+		input: Array<{ type?: string; role?: string }>;
+	}>(thinkingModel(true), { messages: replayedReasoningTranscript() }, "high");
+
+	// The current tools ride the top-level list, and no pair (or pair-anchored note) is sent.
+	expect(payload.tools?.map((tool) => tool.name)).toEqual(["base_tool", "late_tool"]);
+	expect(payload.input.some((item) => item.type === "tool_search_call" || item.type === "tool_search_output")).toBe(
+		false,
+	);
+});
+
+test("keeps the tool-search pair in thinking mode when the model does not declare the fallback", async () => {
+	const payload = await capturePayload<{
+		tools?: Array<{ name: string }>;
+		input: Array<{ type?: string; role?: string }>;
+	}>(thinkingModel(false), { messages: replayedReasoningTranscript() }, "high");
+
+	expect(payload.tools?.map((tool) => tool.name)).toEqual(["base_tool"]);
+	expect(payload.input.some((item) => item.type === "tool_search_output")).toBe(true);
 });

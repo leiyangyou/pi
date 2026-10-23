@@ -194,6 +194,10 @@ function buildParams(
 			supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 			supportsAdditionalTools,
 			supportsToolSearch,
+			requiresFlatToolsInThinkingMode: model.compat?.requiresFlatToolsInThinkingMode ?? false,
+			thinkingMode: Boolean(
+				model.reasoning && (options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : undefined)),
+			),
 		}),
 	);
 	const messages = convertResponsesMessages(model, context, AZURE_TOOL_CALL_PROVIDERS, {
@@ -202,6 +206,10 @@ function buildParams(
 		supportsAdditionalTools,
 		supportsToolSearch,
 		requiresToolSearchTrailingNote: model.compat?.requiresToolSearchTrailingNote ?? false,
+		requiresFlatToolsInThinkingMode: model.compat?.requiresFlatToolsInThinkingMode ?? false,
+		thinkingMode: Boolean(
+			model.reasoning && (options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : undefined)),
+		),
 		toolOptions: {
 			supportsStrictMode: model.compat?.supportsStrictMode ?? true,
 			supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,

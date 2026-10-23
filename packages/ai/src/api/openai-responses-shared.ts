@@ -130,6 +130,16 @@ export interface ConvertResponsesMessagesOptions {
 	supportsAdditionalTools?: boolean;
 	supportsToolSearch?: boolean;
 	requiresToolSearchTrailingNote?: boolean;
+	/**
+	 * Declare the tools in the plain top-level list while this request runs in thinking mode, instead of
+	 * riding a synthetic tool-search pair. DeepSeek's Responses endpoint rejects the pair whenever
+	 * `reasoning.effort` is set, with "The `reasoning_text` in the thinking mode must be passed back to the
+	 * API" (measured 2026-10-24: the same input without the pair returns 200, with `effort: none` the pair
+	 * is accepted, and moving the note or dropping a replayed reasoning item changes nothing).
+	 */
+	requiresFlatToolsInThinkingMode?: boolean;
+	/** Whether this request asks the provider to think; see the compat flag above. */
+	thinkingMode?: boolean;
 	toolOptions?: ConvertResponsesToolsOptions;
 	/**
 	 * Effort for the reply being generated. When set, the thinking level is sent as
@@ -200,9 +210,16 @@ export function getResponsesToolSupport(options: {
 	supportsMidConvoSystemMessages?: boolean;
 	supportsAdditionalTools?: boolean;
 	supportsToolSearch?: boolean;
+	/** Declare the tools plainly while the request runs in thinking mode; see the option's docs. */
+	requiresFlatToolsInThinkingMode?: boolean;
+	/** Whether this request asks the provider to think. */
+	thinkingMode?: boolean;
 }): TranscriptToolSupport {
 	if (options.supportsMidConvoSystemMessages && options.supportsAdditionalTools) return "changes";
-	return options.supportsToolSearch ? "additions" : "none";
+	if (!options.supportsToolSearch) return "none";
+	// An anchored pair is the cheaper transport, but an endpoint can reject it outright while thinking.
+	if (options.requiresFlatToolsInThinkingMode && options.thinkingMode) return "none";
+	return "additions";
 }
 
 /**

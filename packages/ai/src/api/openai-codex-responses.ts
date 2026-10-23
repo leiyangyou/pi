@@ -559,6 +559,8 @@ function buildRequestBody(
 			supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 			supportsAdditionalTools,
 			supportsToolSearch,
+			requiresFlatToolsInThinkingMode: model.compat?.requiresFlatToolsInThinkingMode ?? false,
+			thinkingMode: Boolean(model.reasoning && options?.reasoningEffort !== undefined),
 		}),
 	);
 	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
@@ -568,6 +570,8 @@ function buildRequestBody(
 		supportsAdditionalTools,
 		supportsToolSearch,
 		requiresToolSearchTrailingNote: model.compat?.requiresToolSearchTrailingNote ?? false,
+		requiresFlatToolsInThinkingMode: model.compat?.requiresFlatToolsInThinkingMode ?? false,
+		thinkingMode: Boolean(model.reasoning && options?.reasoningEffort !== undefined),
 		toolOptions: { strict: null, supportsStrictMode, supportsOpenAIGrammarTools },
 	});
 

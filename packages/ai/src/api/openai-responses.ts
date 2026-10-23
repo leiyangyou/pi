@@ -102,6 +102,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		supportsAdditionalTools: model.compat?.supportsAdditionalTools ?? false,
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
 		requiresToolSearchTrailingNote: model.compat?.requiresToolSearchTrailingNote ?? false,
+		requiresFlatToolsInThinkingMode: model.compat?.requiresFlatToolsInThinkingMode ?? false,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
 		supportsMaxOutputTokens: model.compat?.supportsMaxOutputTokens ?? true,
 		supportsMidConvoEffort: model.compat?.supportsMidConvoEffort ?? false,
@@ -382,13 +383,21 @@ function buildParams(
 	grammarToolInputProperties: ReadonlyMap<string, string>,
 	configurationUpdateEffort: string | undefined,
 ) {
-	const transcriptTools = resolveTranscriptTools(context.messages, getResponsesToolSupport(compat));
+	// Thinking mode is what decides the transport for a model that cannot carry the pair while thinking.
+	const reasoningEffort = options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : undefined);
+	const thinkingMode = Boolean(model.reasoning && reasoningEffort);
+	const transcriptTools = resolveTranscriptTools(
+		context.messages,
+		getResponsesToolSupport({ ...compat, thinkingMode }),
+	);
 	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: compat.supportsMidConvoSystemMessages,
 		supportsAdditionalTools: compat.supportsAdditionalTools,
 		supportsToolSearch: compat.supportsToolSearch,
 		requiresToolSearchTrailingNote: compat.requiresToolSearchTrailingNote,
+		requiresFlatToolsInThinkingMode: compat.requiresFlatToolsInThinkingMode,
+		thinkingMode,
 		toolOptions: {
 			supportsStrictMode: compat.supportsStrictMode,
 			supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
@@ -432,7 +441,6 @@ function buildParams(
 		params.tool_choice = options.toolChoice;
 	}
 
-	const reasoningEffort = options?.reasoningEffort ?? (options?.reasoningSummary ? "medium" : undefined);
 	if (model.reasoning) {
 		if (reasoningEffort) {
 			const requestedEffort = options?.reasoningEffort
