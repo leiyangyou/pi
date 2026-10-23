@@ -894,8 +894,7 @@ describe("ExtensionRunner", () => {
 			runner.onError((error) => errors.push(error.error));
 			const original = ["read", "denied"];
 			const result = await runner.emitBeforeAgentStart(
-				"hello",
-				undefined,
+				{ messageType: "user", prompt: "hello" },
 				{
 					cwd: tempDir,
 					selectedTools: original,

@@ -2002,6 +2002,7 @@ export class AgentSession {
 			this._flushPendingCustomMessages();
 			await this._emitAgentSettled();
 		}
+		return true;
 	}
 
 	/**

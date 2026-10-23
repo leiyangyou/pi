@@ -229,19 +229,23 @@ function findLastNonAdditiveToolChange(systemMessages: readonly SystemMessage[])
 }
 
 /**
- * Index of the last system message that redeclares a name with a different definition, or -1.
- * A removal is not included: the removed tool keeps its declaration and its top-level slot, and a
- * call to it is refused rather than executed, so folding the flat field for it would re-bill the
- * prefix for nothing.
+ * Index of the last system message that declares a name already declared before, or -1.
+ *
+ * A redefinition has to move the flat field, because a stale schema must not stay active. A name that
+ * returns unchanged after a removal moves it too: Kimi K3 ignores a removed tool that a later tool
+ * message declares again (verified October 2026), so the re-add cannot ride an in-place item.
+ *
+ * A removal alone is not included: the removed tool keeps its declaration and its top-level slot, the
+ * `tools` section patch tells the model it is gone, and a call to it is refused rather than executed,
+ * so folding the flat field for a removal would re-bill the prefix for nothing.
  */
-function findLastToolRedefinition(systemMessages: readonly SystemMessage[]): number {
-	const declared = new Map<string, Tool>();
+function findLastToolRedeclaration(systemMessages: readonly SystemMessage[]): number {
+	const declared = new Set<string>();
 	let last = -1;
 	for (let index = 0; index < systemMessages.length; index++) {
 		for (const tool of systemMessages[index].toolsAdded ?? []) {
-			const previous = declared.get(tool.name);
-			if (previous !== undefined && !declarationsEqual(previous, tool)) last = index;
-			declared.set(tool.name, tool);
+			if (declared.has(tool.name)) last = index;
+			declared.add(tool.name);
 		}
 	}
 	return last;
@@ -275,7 +279,7 @@ export interface TranscriptTools {
  * leading one, declares its tools in place: an in-place declaration can replace an earlier
  * in-place one, but not a top-level one. With `"additions"`, a removal or redefinition cannot be
  * expressed in place, so the top-level list becomes the tool state after the last such change;
- * later additions stay anchored, and the cached prefix is invalidated once per redefinition instead
+ * later additions stay anchored, and the cached prefix is invalidated once per redeclaration instead
  * of on every later addition. A removal alone does not move it: the removed tool keeps its
  * declaration and slot, and calling it is refused rather than executed. With `"none"`, the
  * top-level list is the current tool set.
@@ -288,7 +292,7 @@ export function resolveTranscriptTools(messages: TranscriptMessages, support: Tr
 	if (support === "changes") return { requestTools: [], foldedSystemMessages: 0 };
 	const folded = Math.max(
 		getInitialSystemMessage(messages) ? 1 : 0,
-		findLastToolRedefinition(systemMessages) + 1,
+		findLastToolRedeclaration(systemMessages) + 1,
 	);
 	return { requestTools: getCurrentTools(systemMessages.slice(0, folded)), foldedSystemMessages: folded };
 }

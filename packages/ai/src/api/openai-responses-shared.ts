@@ -261,16 +261,18 @@ export function convertResponsesMessages<TApi extends Api>(
 	let declaredAdditionalTools = false;
 	/** Tools announced as removed and not declared again since. */
 	const unavailableTools = new Set<string>();
-	// A name must be declared once per request, or a strict endpoint rejects it with "Tool names must be
-	// unique". `hasToolRedefinitions` does not catch this: it only reports a name returning with a
-	// *different* definition, which is the case a name-referencing transport cannot express.
+	// On the additions path a name must be declared once per request, or a strict endpoint rejects it with
+	// "Tool names must be unique". `hasToolRedefinitions` does not catch this: it only reports a name
+	// returning with a *different* definition, which is the case a name-referencing transport cannot express.
+	// Tracked monotone: the flat field to begin with, then each item as it is emitted. The flat field keeps a
+	// removed name in its slot and an emitted item stays sent, so a name that leaves and returns is still
+	// declared and must not go out again. The `changes` path declares in place, where a repeat *is* the
+	// redefinition mechanism, so it is not filtered.
 	const declaredInRequest = new Set(transcriptTools.requestTools.map((tool) => tool.name));
 	const appendSystemToolAdditions = (message: SystemMessage, seed: string): void => {
-		// What the request has declared so far, tracked monotone: the flat field to begin with, then each
-		// item as it is emitted. A removed name keeps its flat slot and an emitted item stays sent, so a
-		// name that leaves and returns is still declared and must not go out again.
-		const tools = (message.toolsAdded ?? []).filter((tool) => !declaredInRequest.has(tool.name));
-		for (const tool of message.toolsAdded ?? []) unavailableTools.delete(tool.name);
+		const added = message.toolsAdded ?? [];
+		const tools = toolSupport === "additions" ? added.filter((tool) => !declaredInRequest.has(tool.name)) : added;
+		for (const tool of added) unavailableTools.delete(tool.name);
 		for (const tool of tools) declaredInRequest.add(tool.name);
 		if (tools.length === 0) return;
 		if (toolSupport === "changes") {

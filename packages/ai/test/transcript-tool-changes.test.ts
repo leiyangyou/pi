@@ -702,7 +702,9 @@ describe("transcript system messages", () => {
 		]);
 	});
 
-	// #10940: synthetic tool search cannot remove tools, so a removal rewrites the prefix once.
+	// The private change: a removal does not move the flat field at all. The removed tool keeps its declaration
+	// and slot, the `tools` section patch and the removal notice tell the model it is gone, and a call to it is
+	// refused rather than executed, so the prefix survives a removal instead of being rewritten once.
 	test("keeps the OpenAI tool search prefix across loads after a removal", async () => {
 		const model: Model<"openai-responses"> = {
 			...additionalToolsModel,
@@ -711,7 +713,9 @@ describe("transcript system messages", () => {
 		const [beforeRemoval, ...afterRemoval] = await captureToolHistory<ResponsesPayload>(model);
 
 		expect(beforeRemoval?.tools?.map((value) => value.name)).toEqual(["base_tool", "drop_tool"]);
-		for (const payload of afterRemoval) expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool"]);
+		for (const payload of afterRemoval) {
+			expect(payload.tools?.map((value) => value.name)).toEqual(["base_tool", "drop_tool"]);
+		}
 		expectGrowingPrefix(afterRemoval.map((payload) => payload.input));
 		expect(
 			afterRemoval
@@ -761,9 +765,10 @@ describe("transcript system messages", () => {
 			{ role: "system", content: "", toolsAdded: [{ ...lateTool, description: "y" }], timestamp: 4 },
 		] satisfies SystemMessage[];
 
+		// A removal alone leaves the boundary where it was: the flat field keeps every initial tool.
 		expect(resolveTranscriptTools(messages.slice(0, 2), "additions")).toEqual({
-			requestTools: [baseTool],
-			foldedSystemMessages: 2,
+			requestTools: [baseTool, dropTool],
+			foldedSystemMessages: 1,
 		});
 		// Kimi K3 ignores a removed tool that a later tool message declares again, so the re-added
 		// drop_tool moves the boundary; the new late_tool after it stays anchored.
@@ -785,13 +790,15 @@ describe("transcript system messages", () => {
 
 	test("keeps the declared list byte identical when a tool leaves and returns unchanged", async () => {
 		const secondTool = tool("second_tool");
+		// The additions transport is where a repeated name can reach the wire twice: the flat field keeps the
+		// initial declarations, so a tool that leaves and returns must not be re-declared as an item.
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "gpt-5.4",
 			name: "GPT-5.4",
 			api: "openai-responses",
 			provider: "openai",
-			compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+			compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
 		};
 		const before = await capturePayload<{ tools?: Array<{ name: string; description: string }> }>(model, {
 			messages: [{ role: "system", content: "base prompt", toolsAdded: [baseTool, secondTool], timestamp: 0 }],
@@ -811,13 +818,14 @@ describe("transcript system messages", () => {
 	test("keeps first-declaration order when a tool is redefined", async () => {
 		const secondTool = tool("second_tool");
 		const redefinedBaseTool = { ...baseTool, description: "base_tool v2" };
+		// A redefinition folds the flat field, and the folded list keeps each name in its first slot.
 		const model: Model<"openai-responses"> = {
 			...modelBase,
 			id: "gpt-5.4",
 			name: "GPT-5.4",
 			api: "openai-responses",
 			provider: "openai",
-			compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+			compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
 		};
 		const payload = await capturePayload<{ tools?: Array<{ name: string }> }>(model, {
 			messages: [
@@ -901,13 +909,13 @@ describe("transcript system messages", () => {
 		messages: Array<{ role: string; tools?: Array<{ function?: { name: string } }> }>;
 	};
 
-	// #10940: Kimi tool messages cannot remove tools, so a removal rewrites the prefix once.
+	// The private change: a removal does not move the top-level list, on this transport either.
 	test("keeps the Kimi prefix across loads after a removal", async () => {
 		const [beforeRemoval, ...afterRemoval] = await captureToolHistory<KimiPayload>(getModel("kimi-coding", "k3"));
 
 		expect(beforeRemoval?.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "drop_tool"]);
 		for (const payload of afterRemoval) {
-			expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
+			expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "drop_tool"]);
 		}
 		expectGrowingPrefix(afterRemoval.map((payload) => payload.messages));
 		expect(
@@ -991,7 +999,7 @@ test("never declares one tool name twice across the flat field and the additions
 		name: "GPT-5.4",
 		api: "openai-responses",
 		provider: "openai",
-		compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+		compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
 	};
 
 	const payload = await capturePayload<unknown>(responses, {
@@ -1035,7 +1043,7 @@ test("never declares a tool twice when it is added again in a later message", as
 		name: "GPT-5.4",
 		api: "openai-responses",
 		provider: "openai",
-		compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true },
+		compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
 	};
 
 	const payload = await capturePayload<unknown>(responses, {

@@ -577,8 +577,8 @@ describe("head stability when a carrier block precedes the head in the transcrip
 	it("keeps the request's flat tool list anchored across the activation", async () => {
 		const { harness, current } = await runToolActivationTurnWithCarrier();
 		harnesses.push(harness);
-		const tools = resolveTranscriptTools(current ?? [], true);
-		expect(tools.anchorsAdditions).toBe(true);
+		const tools = resolveTranscriptTools(current ?? [], "additions");
+		expect(tools.foldedSystemMessages).toBe(1);
 		expect(tools.requestTools.map((tool) => tool.name)).toEqual(["read"]);
 	});
 
@@ -664,7 +664,7 @@ describe("head stability when a carrier block precedes the head in the transcrip
 		const second = captured[1]?.messages ?? [];
 		expect(first[0]?.role).toBe("system");
 		expect(JSON.stringify(second[0])).toBe(JSON.stringify(first[0]));
-		expect(resolveTranscriptTools(second, true).requestTools.map((tool) => tool.name)).toEqual(["read"]);
+		expect(resolveTranscriptTools(second, "additions").requestTools.map((tool) => tool.name)).toEqual(["read"]);
 	});
 
 	// A branch summary can open a new root, where the next prompt writes a fresh head behind it.
@@ -701,7 +701,7 @@ describe("head stability when a carrier block precedes the head in the transcrip
 		expect(current[0]?.role).toBe("system");
 		expect(getInitialSystemMessage(current)?.toolsAdded?.map((tool) => tool.name)).toEqual(["read"]);
 		// The recovered head anchors the flat tool list, and the seeded region keeps its head unmarked.
-		expect(resolveTranscriptTools(current, true).requestTools.map((tool) => tool.name)).toEqual(["read"]);
+		expect(resolveTranscriptTools(current, "additions").requestTools.map((tool) => tool.name)).toEqual(["read"]);
 		const recorded = harness.sessionManager.buildSessionContext().messages as Array<{
 			role: string;
 			leading?: true;
@@ -743,7 +743,7 @@ describe("head stability when a carrier block precedes the head in the transcrip
 		const current = captured[0]?.messages ?? [];
 		expect(current[0]?.role).toBe("system");
 		expect(getInitialSystemMessage(current)?.toolsAdded?.map((tool) => tool.name)).toEqual(["read"]);
-		expect(resolveTranscriptTools(current, true).requestTools.map((tool) => tool.name)).toEqual(["read"]);
+		expect(resolveTranscriptTools(current, "additions").requestTools.map((tool) => tool.name)).toEqual(["read"]);
 	});
 
 	// A compaction re-inserts the turns it retained ahead of the region's own entries, so a retained turn
@@ -761,6 +761,6 @@ describe("head stability when a carrier block precedes the head in the transcrip
 		const current = captured[0]?.messages ?? [];
 		expect(current[0]?.role).toBe("system");
 		expect(getInitialSystemMessage(current)?.toolsAdded?.map((tool) => tool.name)).toEqual(["read"]);
-		expect(resolveTranscriptTools(current, true).requestTools.map((tool) => tool.name)).toEqual(["read"]);
+		expect(resolveTranscriptTools(current, "additions").requestTools.map((tool) => tool.name)).toEqual(["read"]);
 	});
 });
